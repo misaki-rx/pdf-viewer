@@ -14,7 +14,7 @@ desktop = runpy.run_path(str(SCRIPTS / "smoke-desktop.py"))
 Keyboard, wait_for = desktop["Keyboard"], desktop["wait_for"]
 
 
-def comments_pdf(rows=0):
+def comments_pdf(rows=0, row_contents=None, page_label_prefix=None):
     author = (b"\xfe\xff" + "Straße".encode("utf-16-be")).hex()
     extra = " ".join(f"{10 + index} 0 R" for index in range(rows))
     objects = [
@@ -30,10 +30,17 @@ def comments_pdf(rows=0):
         "<< /Type /Annot /Subtype /Text /Rect [0 0 0 0] /IRT 6 0 R /T (Pagewing) /StateModel (Review) /State (Completed) /F 2 >>",
         "<< /Type /Annot /Subtype /Text /Rect [0 0 0 0] /IRT 6 0 R /T (Pagewing) /StateModel (Marked) /State (Marked) /F 2 >>",
     ]
-    objects.extend(
-        f"<< /Type /Annot /Subtype /Text /Rect [50 650 70 670] /T (Reviewer) /Contents (Row {index}) >>"
-        for index in range(rows)
-    )
+    if page_label_prefix is not None:
+        encoded = (b"\xfe\xff" + page_label_prefix.encode("utf-16-be")).hex()
+        objects[0] = f"<< /Type /Catalog /Pages 2 0 R /PageLabels << /Nums [0 << /S /D /P <{encoded}> >>] >> >>"
+    # Large-filter fixtures share one PDF string but decode separate comment
+    # fields, keeping the input file small while exercising the real scan.
+    for index in range(rows):
+        contents = f"(Row {index})" if row_contents is None else f"{10 + rows} 0 R"
+        objects.append(f"<< /Type /Annot /Subtype /Text /Rect [50 650 70 670] /T (Reviewer) /Contents {contents} >>")
+    if row_contents is not None:
+        contents = b"\xfe\xff" + row_contents.encode("utf-16-be")
+        objects.append(f"<{contents.hex()}>")
     data = bytearray(b"%PDF-1.4\n")
     offsets = [0]
     for number, obj in enumerate(objects, 1):
@@ -51,7 +58,7 @@ def run(binary):
     with tempfile.TemporaryDirectory(prefix="pagewing-comments-") as directory:
         root = Path(directory)
         document = root / "pagewing-smoke.pdf"
-        original = comments_pdf()
+        original = comments_pdf(page_label_prefix="附录\u2028审阅-")
         document.write_bytes(original)
         environment = dict(os.environ, XDG_CONFIG_HOME=str(root / "config"),
                            XDG_DATA_HOME=str(root / "data"), LIBGL_ALWAYS_SOFTWARE="1")
@@ -82,12 +89,42 @@ def run(binary):
                 keyboard.key("a", ctrl=True)
                 text(value)
 
+            def toggle_filter(tabs):
+                keyboard.click((1000, 114))
+                for _ in range(tabs):
+                    keyboard.key(0xFF09)
+                keyboard.key(" ")
+
             try:
                 wait_for(keyboard.focus, "comments reader window")
                 expect(0)
                 keyboard.key("m", ctrl=True, shift=True)
                 query("elsewhere")
                 assert copied() == "elsewhere", "filter input owns text editing shortcuts"
+                for window in ("recent", "help", "properties"):
+                    if window == "recent":
+                        keyboard.key("p", ctrl=True)
+                    else:
+                        keyboard.click((500, 400))  # Return focus to the reader.
+                        keyboard.key(0xFFBE if window == "help" else "s")
+                    keyboard.key(0xFF1B)
+                    query("elsewhere")
+                    assert copied() == "elsewhere", f"Escape closes {window} before the underlying comment panel"
+                    expect(0)
+                keyboard.key(0xFF09, shift=True)  # Filter -> Copy.
+                keyboard.key(0xFF0D)
+                exported = keyboard.clipboard()
+                for expected in ["Page 2 · Highlight", "PDF page label: 附录 审阅-2\n", "Author: Bob", "Elsewhere comment"]:
+                    assert expected in exported, (expected, exported)
+                assert "Root question" not in exported
+                keyboard.key(0xFF09)  # Copy -> filter, without toggling the left sidebar.
+                assert copied() == "elsewhere", "Tab returns to filter text editing"
+                keyboard.key(0xFF09, shift=True)
+                keyboard.key(0x20)
+                assert keyboard.clipboard() == exported, "Space activates Copy without paging"
+                expect(0)
+                assert document.read_bytes() == original, "copying comments leaves the PDF intact"
+                query("elsewhere")
                 expect(0)
                 keyboard.key(0xFF0D)
                 expect(1)
@@ -119,12 +156,20 @@ def run(binary):
                 query("jkg STRASSE")
                 assert copied() == "jkg STRASSE", "Unicode folding query does not navigate or rotate"
                 expect(1)
-                keyboard.click((920, 180))  # Current page: reply lives on the other page.
+                toggle_filter(3)  # Current page: reply lives on the other page.
                 keyboard.key(0xFF1B)
                 keyboard.key("k", shift=True)
                 expect(0)
                 keyboard.key("m", ctrl=True, shift=True)
-                keyboard.click((1030, 145))  # Marked only; retain the root as context.
+                toggle_filter(2)  # Marked only; retain the root as context.
+                query("jkg STRASSE")
+                keyboard.click((1075, 84))
+                exported = keyboard.clipboard()
+                for expected in ["[Thread context]", "Root question", "Author: Straße", "Reply depth: 1", "Status: Completed / resolved", "Marked: yes", "Nested needle jkg"]:
+                    assert expected in exported, (expected, exported)
+                assert exported.index("Root question") < exported.index("Nested needle jkg")
+                assert exported.count("PDF page label: 附录 审阅-1\n") == 2
+                assert "Saved elsewhere comment" not in exported
                 query("jkg STRASSE")
                 keyboard.key("k", ctrl=True)
                 keyboard.key(0xFF0D)
@@ -140,7 +185,7 @@ def run(binary):
                 finally:
                     application.send_signal(signal.SIGCONT)
                 expect(1)
-                print("PASS: native comment filters, Unicode author matching, current-page/marked combination, keyboard selection/Enter, parent context, full editor, same-frame unsaved text/close and final text/save/reload protection, multiline highlight read/edit/reload and page navigation")
+                print("PASS: native comment filters, Escape closes recent/help/properties before comments, Unicode author matching, current-page/marked combination, keyboard selection/Enter, parent context, full editor, same-frame unsaved text/close and final text/save/reload protection, multiline highlight read/edit/reload, filtered clipboard export with thread context, keyboard activation/focus traversal and page navigation")
             except Exception:
                 log.flush()
                 log.seek(0)

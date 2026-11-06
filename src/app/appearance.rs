@@ -91,7 +91,7 @@ pub(super) fn logo(ui: &mut egui::Ui, size: f32) {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Hash)]
 pub(super) enum Icon {
     Sidebar,
     Comments,
@@ -103,10 +103,32 @@ pub(super) enum Icon {
     Bookmark,
     Theme,
     Help,
+    HistoryBack,
+    HistoryForward,
 }
 
-pub(super) fn tool(ui: &mut egui::Ui, icon: Icon, label: &str, selected: bool) -> egui::Response {
-    let response = ui.add(
+/// Action controls keep their identity when surrounding labels or optional
+/// controls appear, disappear, or change their place in a responsive row.
+pub(super) fn action_button(
+    ui: &mut egui::Ui,
+    action: impl std::hash::Hash,
+    button: egui::Button<'_>,
+) -> egui::Response {
+    ui.scope_builder(egui::UiBuilder::new().id(("reader-action", action)), |ui| {
+        ui.add(button)
+    })
+    .inner
+}
+
+pub(super) fn toolbar_tool(
+    ui: &mut egui::Ui,
+    icon: Icon,
+    label: &str,
+    selected: bool,
+) -> egui::Response {
+    let response = action_button(
+        ui,
+        icon,
         egui::Button::new("")
             .min_size(Vec2::new(32.0, 32.0))
             .selected(selected),
@@ -155,6 +177,14 @@ pub(super) fn tool(ui: &mut egui::Ui, icon: Icon, label: &str, selected: bool) -
         }
         Icon::Previous => line(&[(3., -6.), (-3., 0.), (3., 6.)]),
         Icon::Next => line(&[(-3., -6.), (3., 0.), (-3., 6.)]),
+        Icon::HistoryBack => {
+            line(&[(7., 0.), (-7., 0.)]);
+            line(&[(-1., -6.), (-7., 0.), (-1., 6.)]);
+        }
+        Icon::HistoryForward => {
+            line(&[(-7., 0.), (7., 0.)]);
+            line(&[(1., -6.), (7., 0.), (1., 6.)]);
+        }
         Icon::Rotate => {
             line(&[
                 (5., -4.),

@@ -1,4 +1,4 @@
-use super::{Pagewing, appearance, tooltips::LazyTooltip};
+use super::{Pagewing, appearance, list_focus, list_focus::reveal_offset, tooltips::LazyTooltip};
 use eframe::egui::{self, RichText, Vec2};
 
 mod bookmarks;
@@ -12,14 +12,21 @@ enum RowAction {
     Remove,
 }
 
+struct RowResponse {
+    action: Option<RowAction>,
+    focused: Option<egui::Id>,
+    jump: egui::Response,
+    remove: egui::Response,
+    keyboard_removal: Option<egui::Id>,
+}
+
 fn removable_row(
     ui: &mut egui::Ui,
     selected: bool,
     label: impl Into<egui::WidgetText>,
     delete_tooltip: &str,
     tooltip: impl FnOnce(&mut egui::Ui),
-) -> Option<RowAction> {
-    let mut action = None;
+) -> RowResponse {
     let row_height = Pagewing::sidebar_row_height(ui);
     ui.horizontal(|ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -33,22 +40,39 @@ fn removable_row(
                     ui.set_max_width(ui.spacing().tooltip_width);
                     tooltip(ui);
                 });
-            if jump.clicked() {
-                action = Some(RowAction::Jump);
+            let focused = list_focus::row_focus(&jump).or_else(|| list_focus::row_focus(&remove));
+            let action = if jump.clicked() {
+                Some(RowAction::Jump)
             } else if remove.clicked() {
-                action = Some(RowAction::Remove);
+                Some(RowAction::Remove)
+            } else {
+                None
+            };
+            let keyboard_removal = (remove.clicked()
+                && remove.has_focus()
+                && !ui.input(|input| input.pointer.any_click()))
+            .then_some(remove.id);
+            RowResponse {
+                action,
+                focused,
+                jump,
+                remove,
+                keyboard_removal,
             }
-        });
-    });
-    action
-}
-
-/// Reveal only the part of a row outside the current list viewport.
-fn reveal_offset(offset: f32, top: f32, row_height: f32, height: f32) -> f32 {
-    offset.max((top + row_height - height).max(0.0)).min(top)
+        })
+        .inner
+    })
+    .inner
 }
 
 impl Pagewing {
+    pub(super) fn sidebar_control_focused(&self, context: &egui::Context) -> bool {
+        self.library.sidebar
+            && self.nav.count > 0
+            && (self.removal_focus.control_focused(context)
+                || super::shortcuts::focused_in_region(context, self.sidebar_region))
+    }
+
     fn sidebar_row_height(ui: &egui::Ui) -> f32 {
         (ui.text_style_height(&egui::TextStyle::Button) + 2.0 * ui.spacing().button_padding.y)
             .max(ui.spacing().interact_size.y)
@@ -56,11 +80,16 @@ impl Pagewing {
     }
 
     pub(super) fn sidebar(&mut self, context: &egui::Context) {
+        self.list_keyboard.begin_frame(context);
+        self.sidebar_region = None;
+        self.input_buttons.current_chapter = None;
         self.thumbnails.begin_frame();
         if !self.library.sidebar
             || self.nav.count == 0
             || (self.comments.open && context.available_rect().width() < 220.0)
         {
+            self.list_keyboard.clear();
+            self.removal_focus.clear();
             if !self.loading
                 && let Some(keys) = self.thumbnails.requests()
             {
@@ -72,7 +101,7 @@ impl Pagewing {
         // in a narrow window.
         let maximum = (context.available_rect().width() - 120.0).clamp(100.0, 380.0);
         let short = context.available_rect().height() < 320.0;
-        egui::SidePanel::left("sidebar")
+        let panel = egui::SidePanel::left("sidebar")
             .frame(appearance::panel(context, 14))
             .default_width(256.0_f32.min(maximum))
             .width_range(180.0_f32.min(maximum)..=maximum)
@@ -110,7 +139,17 @@ impl Pagewing {
                         ui.separator();
                         ui.add_space(10.0);
                     }
-                    let contents_navigation = self.contents(ui);
+                    // Responsive headers and preceding lists must not change
+                    // the IDs of focused controls in the following sections.
+                    let contents_navigation = if self.outline.is_empty() {
+                        false
+                    } else {
+                        ui.scope_builder(
+                            egui::UiBuilder::new().id(("sidebar-contents", self.id)),
+                            |ui| self.contents(ui),
+                        )
+                        .inner
+                    };
                     let mut other_focus = chapter_focus || contents_navigation;
                     appearance::section(ui, "BOOKMARKS");
                     if self.reading.bookmarks.is_empty() {
@@ -120,16 +159,36 @@ impl Pagewing {
                         ));
                     }
                     if !self.bookmark_pages.is_empty() {
-                        other_focus |= self.bookmark_list(ui);
+                        other_focus |= ui
+                            .scope_builder(
+                                egui::UiBuilder::new().id(("sidebar-bookmarks", self.id)),
+                                |ui| self.bookmark_list(ui),
+                            )
+                            .inner;
                     }
                     if !self.reading.marks.is_empty() {
-                        other_focus |= self.mark_list(ui);
+                        other_focus |= ui
+                            .scope_builder(
+                                egui::UiBuilder::new().id(("sidebar-marks", self.id)),
+                                |ui| self.mark_list(ui),
+                            )
+                            .inner;
                     }
                     let reveal_search = self.reveal_hit.is_some() && !self.hits.is_empty();
-                    self.search_results(ui, viewport, chapter_focus);
-                    self.pages(ui, viewport, other_focus || reveal_search);
+                    if !self.hits.is_empty() {
+                        ui.scope_builder(
+                            egui::UiBuilder::new().id(("sidebar-results", self.id)),
+                            |ui| self.search_results(ui, viewport, chapter_focus),
+                        );
+                    }
+                    ui.scope_builder(
+                        egui::UiBuilder::new().id(("sidebar-pages", self.id)),
+                        |ui| self.pages(ui, viewport, other_focus || reveal_search),
+                    );
+                    super::shortcuts::reveal_focused_control(ui, viewport);
                 });
             });
+        self.sidebar_region = Some((panel.response.layer_id, panel.response.rect));
         if !self.loading
             && let Some(keys) = self.thumbnails.requests()
         {

@@ -1,4 +1,5 @@
 use super::{MarkAction, Pagewing, input_dialogs, set_theme, shortcuts, zoom};
+use crate::input_actions::{self, ReaderAction};
 use crate::{links::LinkTarget, navigation::Fit};
 use eframe::egui::{self, Key, Vec2};
 
@@ -20,10 +21,19 @@ impl Pagewing {
             }
             return;
         }
+        // Refresh a held Undo before dispatching its activation. A quiet window
+        // may have spent longer than the notice timeout between input frames.
+        self.update_notice_interaction(context);
+        let search_input_focused = self.search_open
+            && (self.search_focus
+                || context
+                    .memory(|memory| memory.has_focus(egui::Id::new("pagewing-search-input"))));
         // Apply button actions before routing this frame's keyboard input.
         // Otherwise a click that releases search focus can send following text
         // to reader commands before the new input has opened.
         match self.input_buttons.clicked(context) {
+            Some(shortcuts::InputButton::CurrentChapter) => self.show_current_chapter(context),
+            Some(shortcuts::InputButton::ReadingControls) => self.toggle_reading_controls(context),
             Some(shortcuts::InputButton::Help) => {
                 if self.help {
                     self.close_help(context);
@@ -32,7 +42,32 @@ impl Pagewing {
                 }
             }
             Some(shortcuts::InputButton::Find) => self.find(),
-            Some(shortcuts::InputButton::Search(action)) => self.search_button(action),
+            Some(shortcuts::InputButton::Menu(id)) => {
+                if let Some(response) = context.read_response(id) {
+                    egui::Popup::toggle_id(context, egui::Popup::default_response_id(&response));
+                }
+            }
+            Some(shortcuts::InputButton::History(forward)) => {
+                self.toolbar_history(context, forward)
+            }
+            Some(shortcuts::InputButton::Search(action)) => {
+                self.search_button(action);
+                if action == shortcuts::SearchButton::Results {
+                    self.focus_search_results(context);
+                }
+                if matches!(
+                    action,
+                    shortcuts::SearchButton::Copy
+                        | shortcuts::SearchButton::Stop
+                        | shortcuts::SearchButton::Restart
+                ) && search_input_focused
+                {
+                    // Reading button responses can release text focus before
+                    // TextEdit consumes queued edits. Apply those edits before
+                    // copying results or stopping/restarting the latest query.
+                    self.search_focus = true;
+                }
+            }
             Some(shortcuts::InputButton::Comments) => {
                 self.set_comments_open(context, !self.comments.open);
             }
@@ -110,10 +145,9 @@ impl Pagewing {
         }
         // Preserve action order, including side-button history mixed with keys.
         // Text, paste, IME and primary pointer events stay in egui.
-        for (event, key_text) in
-            context.input(|input| shortcuts::reader_actions(input).collect::<Vec<_>>())
-        {
-            let symbol = key_text.character();
+        let mut actions = std::mem::take(&mut self.reader_actions);
+        context.input(|input| actions.extend(input_actions::reader_actions(input)));
+        for event in actions.drain(..) {
             // Opening/closing an input changes how later keys in this same
             // frame must be routed, before its widget has been drawn.
             let typing = (self.search_open && self.search_focus)
@@ -144,16 +178,24 @@ impl Pagewing {
                     .any(|name| memory.has_focus(egui::Id::new(name)))
                 });
             let popup_open = egui::Popup::is_any_open(context);
-            if let egui::Event::PointerButton { button, .. } = event {
+            if let ReaderAction::History { forward } = event {
                 if !typing && !self.help && !self.properties_open && !popup_open {
                     self.nav.clear_prefix();
                     self.mark_action = None;
-                    self.history(button == egui::PointerButton::Extra2);
+                    self.history(forward);
                 }
                 continue;
             }
-            if matches!(event, egui::Event::Copy) && !typing && !popup_open && self.selection.active
+            if event == ReaderAction::Copy
+                && !typing
+                && !popup_open
+                && !self.help
+                && !self.properties_open
+                && super::copy_menu::request_copy(context)
             {
+                continue;
+            }
+            if event == ReaderAction::Copy && !typing && !popup_open && self.selection.active {
                 self.copy_selection(context);
                 context.input_mut(|input| {
                     input
@@ -162,17 +204,32 @@ impl Pagewing {
                 });
                 continue;
             }
-            let egui::Event::Key {
+            let ReaderAction::Key {
                 key,
-                pressed: true,
                 modifiers,
-                ..
+                text: key_text,
             } = event
             else {
                 continue;
             };
+            let symbol = key_text.character();
             let raw_key = key;
             let raw_modifiers = modifiers;
+            if !typing && self.list_keyboard_key(context, key, modifiers) {
+                continue;
+            }
+            if !typing
+                && !popup_open
+                && !self.help
+                && !self.properties_open
+                && super::copy_menu::open(context, key, modifiers)
+            {
+                self.nav.clear_prefix();
+                self.hints.cancel();
+                self.mark_action = None;
+                context.input_mut(|input| input.consume_key(raw_modifiers, raw_key));
+                continue;
+            }
             if self.nav.count == 0
                 && !typing
                 && !(self.help || self.properties_open || popup_open)
@@ -185,9 +242,27 @@ impl Pagewing {
                 // including when the reader's sidebar binding is disabled.
                 continue;
             }
-            if key == Key::Tab && self.search_open && self.input_buttons.search_has_focus(context) {
+            if key == Key::Tab && self.search_control_focused(context) {
                 // Tab traverses the search controls while they own focus.
                 // In the reader it retains its sidebar-toggle binding.
+                continue;
+            }
+            if !popup_open
+                && !self.help
+                && !self.properties_open
+                && !modifiers.command
+                && !modifiers.ctrl
+                && !modifiers.alt
+                && (key == Key::Tab
+                    || (!typing && !modifiers.shift && matches!(key, Key::Enter | Key::Space)))
+                && (self.comment_control_focused(context)
+                    || self.sidebar_control_focused(context)
+                    || self.toolbar_control_focused(context)
+                    || self.status_control_focused(context)
+                    || self.search_control_focused(context))
+            {
+                // Reader bars and sidebars own focus traversal and button
+                // activation, leaving the reading view and shortcuts alone.
                 continue;
             }
             // Adapt configured bindings to the existing reader commands, but
@@ -345,7 +420,14 @@ impl Pagewing {
                 context.input_mut(|input| input.consume_key(raw_modifiers, raw_key));
                 continue;
             }
-            if key == Key::Escape && self.comments.open {
+            // Floating reader windows sit above the comment sidebar. Dismiss
+            // the front window first and keep the underlying draft visible.
+            if key == Key::Escape
+                && self.comments.open
+                && !self.help
+                && !self.properties_open
+                && self.recent_picker.is_none()
+            {
                 self.set_comments_open(context, false);
                 context.input_mut(|input| input.consume_key(raw_modifiers, raw_key));
                 continue;
@@ -355,13 +437,13 @@ impl Pagewing {
                 self.hints.cancel();
                 self.selection.cancel();
                 self.mark_action = None;
-                self.help = false;
+                self.close_help(context);
                 self.properties_open = false;
                 self.recent_picker = None;
                 self.page_input = None;
                 self.search_open = false;
                 self.search_focus = false;
-                self.pending_search_jump = None;
+                self.search_navigation.clear();
                 self.password_input = None;
                 self.nav.clear_prefix();
                 context.memory_mut(|memory| {
@@ -369,6 +451,7 @@ impl Pagewing {
                         memory.surrender_focus(id);
                     }
                 });
+                context.input_mut(|input| input.consume_key(raw_modifiers, raw_key));
                 continue;
             }
             if modifiers.command && key == Key::O {
@@ -432,7 +515,7 @@ impl Pagewing {
                 let filter_focused = picker.focus
                     || context
                         .memory(|memory| memory.has_focus(egui::Id::new("pagewing-recent-input")));
-                // Tab can focus a result, Open or Cancel. Leave their activation
+                // Tab can focus a result or footer action. Leave their activation
                 // keys for egui instead of treating every Enter as filter confirm.
                 if key == Key::Enter && filter_focused {
                     picker.confirm = true;
@@ -616,7 +699,7 @@ impl Pagewing {
                         }
                     }
                 } else if matches!(key, Key::J | Key::K) {
-                    self.pending_search_jump = None;
+                    self.search_navigation.clear();
                     if let Some(page) = crate::navigation::bookmark_target(
                         &self.bookmark_pages,
                         self.nav.page,
@@ -630,6 +713,8 @@ impl Pagewing {
                             self.library.shortcuts.label("bookmark")
                         ));
                     }
+                } else if !modifiers.shift && matches!(key, Key::ArrowDown | Key::ArrowUp) {
+                    self.jump_chapter(key == Key::ArrowUp, count);
                 }
                 continue;
             }
@@ -870,11 +955,14 @@ impl Pagewing {
                         context.input(|input| input.viewport().fullscreen.unwrap_or(false));
                     context.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!fullscreen));
                 }
+                Key::F9 => self.toggle_reading_controls(context),
                 _ => self.nav.clear_prefix(),
             }
             if !matches!(key, Key::G | Key::Z) {
                 self.nav.clear_prefix();
             }
         }
+        input_actions::recycle(&mut actions);
+        self.reader_actions = actions;
     }
 }

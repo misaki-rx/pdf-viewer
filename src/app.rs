@@ -1,18 +1,27 @@
 mod appearance;
+mod chapters;
 mod comments;
 #[cfg(test)]
 mod config;
 mod continuous;
+mod copy_menu;
 mod dialog;
 mod errors;
+mod focus_input;
 mod help;
+mod history_controls;
 mod input_dialogs;
 mod keyboard;
 mod lifecycle;
+mod list_focus;
+mod list_keyboard;
+mod menu_focus;
 mod plugins;
 mod properties;
+mod reading_controls;
 mod recent;
 mod reload;
+mod removal_focus;
 mod search;
 mod selection_scroll;
 mod shortcuts;
@@ -23,6 +32,8 @@ mod sync;
 mod tiles;
 mod toolbar;
 mod tooltips;
+mod view_menu;
+mod viewport;
 mod welcome;
 mod zoom;
 
@@ -80,10 +91,14 @@ pub struct Pagewing {
     comments: comments::CommentUi,
     synctex: sync::SyncUi,
     outline: crate::outline_view::OutlineView,
+    sidebar_region: Option<(egui::LayerId, egui::Rect)>,
+    toolbar_region: Option<(egui::LayerId, egui::Rect)>,
+    search_region: Option<(egui::LayerId, egui::Rect)>,
+    status_region: Option<(egui::LayerId, egui::Rect)>,
     labels: crate::page_labels::PageLabels,
     links: crate::link_cache::LinkCache,
-    visible_links: crate::link_visibility::LinkVisibility,
-    other_visible_links: crate::link_visibility::LinkVisibility,
+    visible_links: crate::visible_rects::VisibleRects,
+    other_visible_links: crate::visible_rects::VisibleRects,
     hints: LinkHints,
     copy_link_hints: bool,
     mark_action: Option<MarkAction>,
@@ -117,25 +132,36 @@ pub struct Pagewing {
     render_ms: f64,
     dialog: Option<Receiver<Option<PathBuf>>>,
     deferred_input: Vec<egui::Event>,
+    focus_input: std::collections::VecDeque<egui::Event>,
+    reader_actions: Vec<crate::input_actions::ReaderAction>,
     search_open: bool,
     search_focus: bool,
+    copy_search_requested: bool,
+    search_run_requested: Option<search::RunAction>,
     query: String,
+    query_history: crate::query_history::QueryHistory,
     search_due: Option<Instant>,
     revision: u64,
     hits: Vec<SearchHit>,
+    search_highlights: crate::search_highlights::SearchHighlights,
     result_text: crate::search_result_text::ResultTextCache,
     hit_index: Option<usize>,
     reveal_hit: Option<usize>,
-    pending_search_jump: Option<(bool, usize)>,
+    result_focus_origin: Option<egui::Id>,
+    list_keyboard: list_keyboard::ListKeyboard,
+    removal_focus: removal_focus::RemovalFocus,
+    search_navigation: crate::search_navigation::SearchNavigation,
     scanned: usize,
     scan_total: usize,
     search_complete: bool,
     search_limited: bool,
+    search_stopped: bool,
     page_input: Option<input_dialogs::PageInput>,
     zoom_input: Option<zoom::ZoomInput>,
     help: bool,
     help_filter: help::HelpFilter,
     input_buttons: shortcuts::InputButtons,
+    controls_hidden: bool,
     recent_picker: Option<crate::recent::RecentPicker>,
     password_input: Option<input_dialogs::PasswordInput>,
     saved: Instant,
@@ -244,10 +270,14 @@ impl Pagewing {
             comments: comments::CommentUi::default(),
             synctex: sync::SyncUi::default(),
             outline: crate::outline_view::OutlineView::default(),
+            sidebar_region: None,
+            toolbar_region: None,
+            search_region: None,
+            status_region: None,
             labels: crate::page_labels::PageLabels::default(),
             links: crate::link_cache::LinkCache::default(),
-            visible_links: crate::link_visibility::LinkVisibility::default(),
-            other_visible_links: crate::link_visibility::LinkVisibility::default(),
+            visible_links: crate::visible_rects::VisibleRects::default(),
+            other_visible_links: crate::visible_rects::VisibleRects::default(),
             hints: LinkHints::default(),
             copy_link_hints: false,
             mark_action: None,
@@ -281,25 +311,36 @@ impl Pagewing {
             render_ms: 0.0,
             dialog: None,
             deferred_input: Vec::new(),
+            focus_input: Default::default(),
+            reader_actions: Vec::new(),
             search_open: false,
             search_focus: false,
+            copy_search_requested: false,
+            search_run_requested: None,
             query: String::new(),
+            query_history: crate::query_history::QueryHistory::default(),
             search_due: None,
             revision: 0,
             hits: Vec::new(),
+            search_highlights: crate::search_highlights::SearchHighlights::default(),
             result_text: crate::search_result_text::ResultTextCache::default(),
             hit_index: None,
             reveal_hit: None,
-            pending_search_jump: None,
+            result_focus_origin: None,
+            list_keyboard: list_keyboard::ListKeyboard::default(),
+            removal_focus: removal_focus::RemovalFocus::default(),
+            search_navigation: Default::default(),
             scanned: 0,
             scan_total: 0,
             search_complete: true,
             search_limited: false,
+            search_stopped: false,
             page_input: None,
             zoom_input: None,
             help: false,
             help_filter: help::HelpFilter::default(),
             input_buttons: shortcuts::InputButtons::default(),
+            controls_hidden: false,
             recent_picker: None,
             password_input: None,
             saved: Instant::now(),
@@ -476,7 +517,7 @@ impl Pagewing {
         self.pending_offset = None;
         self.pending_focus = None;
         self.reading.offset = [0.0; 2];
-        self.pending_search_jump = None;
+        self.search_navigation.clear();
         self.requested = None;
         self.dirty = true;
     }
@@ -530,7 +571,7 @@ impl Pagewing {
             return;
         }
         self.hints.cancel();
-        self.pending_search_jump = None;
+        self.search_navigation.clear();
         let mut offset = self.current_offset();
         offset[axis] = fraction;
         if self.reading.continuous && axis == 1 && self.overflow.y > 0.0 {
@@ -695,7 +736,7 @@ impl Pagewing {
         );
         if changed {
             if let Some(message) = &mut self.message {
-                message.recovery = None;
+                message.cancel_recovery();
             }
             self.dirty = true;
         }
@@ -805,7 +846,7 @@ impl Pagewing {
                     self.requested = None;
                     self.render_planner = RenderPlanner::default();
                     self.links.clear();
-                    self.visible_links = crate::link_visibility::LinkVisibility::default();
+                    self.visible_links = crate::visible_rects::VisibleRects::default();
                     self.hints.cancel();
                     self.selection.cancel();
                     self.pending_focus = None;
@@ -832,8 +873,11 @@ impl Pagewing {
                     self.worker.comments();
                     self.reveal_page = Some(self.nav.page);
                     self.reveal_page_section = self.library.thumbnails;
-                    self.outline.set_entries(outline);
+                    self.outline = *outline;
                     self.labels = labels;
+                    if let Some(input) = &mut self.page_input {
+                        input.invalidate_preview();
+                    }
                     if reloaded {
                         self.restart_search();
                     }
@@ -903,14 +947,15 @@ impl Pagewing {
                     complete,
                     limited,
                 } if id == self.id && revision == self.revision => {
+                    if !hits.is_empty() {
+                        self.search_highlights.invalidate();
+                    }
                     self.hits.extend(hits);
                     self.scanned = scanned;
                     self.scan_total = total;
                     self.search_complete = complete;
                     self.search_limited = limited;
-                    if let Some((reverse, count)) = self.pending_search_jump.take() {
-                        self.next_hits(reverse, count);
-                    }
+                    self.resume_search_navigation();
                 }
                 Event::Text { id, page, text } if id == self.id => {
                     if text.trim().is_empty() {
@@ -974,7 +1019,7 @@ impl Pagewing {
                     return;
                 }
                 let rect = ui.max_rect().shrink(24.0);
-                self.viewport = rect.size();
+                self.resize_viewport(rect.size());
                 let dimensions = self.dimensions[self.nav.page];
                 let Some(rotated) = self.resolve_view() else {
                     return;
@@ -1173,6 +1218,7 @@ impl Pagewing {
                     );
                 }
             });
+        self.controls_restore_button(context, canvas.response.rect);
         if self.file_changed && self.nav.count > 0 {
             self.file_change_notice(context, canvas.response.rect);
         }
@@ -1182,7 +1228,7 @@ impl Pagewing {
     }
 
     fn highlights(
-        &self,
+        &mut self,
         painter: &egui::Painter,
         page: usize,
         page_rect: egui::Rect,
@@ -1192,21 +1238,28 @@ impl Pagewing {
         if !clip.is_positive() {
             return;
         }
-        painter.extend(crate::text::page_hits(&self.hits, page).flat_map(|index| {
-            let hit = &self.hits[index];
-            let color = if self.hit_index == Some(index) {
-                CURRENT_SEARCH_COLOR
-            } else {
-                SEARCH_COLOR
-            };
-            hit.rects.iter().filter_map(move |rect| {
-                let rect = self
-                    .link_rect(*rect, page_rect, dimensions)
-                    .intersect(page_rect);
-                (rect.is_positive() && clip.intersects(rect))
-                    .then(|| egui::Shape::rect_filled(rect, 1.0, color))
-            })
-        }));
+        let view = crate::visible_rects::PageView {
+            document: self.id,
+            page,
+            page_rect,
+            clip,
+            dimensions,
+            rotation: self.reading.rotation,
+            scale: self.scale,
+        };
+        let selected = self.hit_index;
+        painter.extend(
+            self.search_highlights
+                .visible(&self.hits, view, self.nav.page)
+                .map(|(index, rect)| {
+                    let color = if selected == Some(index) {
+                        CURRENT_SEARCH_COLOR
+                    } else {
+                        SEARCH_COLOR
+                    };
+                    egui::Shape::rect_filled(rect, 1.0, color)
+                }),
+        );
     }
 
     fn follow_destination(&mut self, destination: crate::destination::Destination) {
@@ -1223,7 +1276,7 @@ impl Pagewing {
         self.nav.clear_prefix();
         self.hints.cancel();
         self.selection.cancel();
-        self.pending_search_jump = None;
+        self.search_navigation.clear();
         self.pending_focus = None;
         self.pending_offset = None;
         self.reading.fit = destination.fit(
@@ -1268,7 +1321,7 @@ impl Pagewing {
         page_rect: egui::Rect,
         dimensions: [f32; 2],
     ) -> egui::Rect {
-        crate::link_visibility::screen_rect(
+        crate::visible_rects::screen_rect(
             rect,
             page_rect,
             dimensions,
@@ -1298,7 +1351,7 @@ impl Pagewing {
             &mut self.other_visible_links
         };
         let changed = visible.update(
-            crate::link_visibility::LinkView {
+            crate::visible_rects::PageView {
                 document: self.id,
                 page,
                 page_rect,
@@ -1344,28 +1397,13 @@ impl Pagewing {
                     self.hints.cancel();
                     self.mark_action = None;
                 }
-                response.context_menu(|ui| {
-                    let copy = ui.button("Copy link address");
-                    if response.secondary_clicked() {
-                        copy.request_focus();
-                    }
-                    ui.memory_mut(|memory| {
-                        memory.set_focus_lock_filter(
-                            copy.id,
-                            egui::EventFilter {
-                                tab: true,
-                                horizontal_arrows: true,
-                                vertical_arrows: true,
-                                ..Default::default()
-                            },
-                        );
-                    });
-                    if copy.clicked() {
-                        ui.ctx().copy_text(url.clone());
-                        copied = true;
-                        ui.close();
-                    }
-                });
+                copied |= copy_menu::show(
+                    &response,
+                    egui::Popup::default_response_id(&response),
+                    "Copy link address",
+                    url,
+                    copy_menu::Target::Document,
+                );
             }
             if response.clicked() {
                 follow = Some(link.target.clone());
@@ -1408,6 +1446,10 @@ impl Pagewing {
 }
 
 impl eframe::App for Pagewing {
+    fn raw_input_hook(&mut self, context: &egui::Context, input: &mut egui::RawInput) {
+        self.prepare_native_input(context, input);
+    }
+
     fn update(&mut self, context: &egui::Context, _: &mut eframe::Frame) {
         let popup_view = (
             self.id,
@@ -1455,7 +1497,11 @@ impl eframe::App for Pagewing {
                 self.pan,
                 self.viewport,
             )
+            && !self.input_buttons.control_menu_open(context)
+            && !copy_menu::control_menu_open(context)
         {
+            // Document context menus depend on page geometry. Menus anchored
+            // to reader controls retain their focus while the viewport resizes.
             egui::Popup::close_all(context);
         }
         if let Some(due) = self.search_due {

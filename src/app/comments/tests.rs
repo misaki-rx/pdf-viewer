@@ -1,3 +1,9 @@
+mod actions;
+mod editor;
+mod filtering;
+mod menus;
+mod overlays;
+
 use super::*;
 use egui::{Context, Event, Key, Modifiers, RawInput};
 use std::time::{Duration, Instant};
@@ -87,7 +93,17 @@ fn click_text_size(app: &mut Pagewing, context: &Context, label: &str, size: Vec
     } else {
         points.next()
     }
-    .unwrap_or_else(|| panic!("Missing visible button: {label}"));
+    .unwrap_or_else(|| {
+        let texts: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) => Some((text.galley.text(), text.pos)),
+                _ => None,
+            })
+            .collect();
+        panic!("Missing visible button: {label} at {size:?}; {texts:?}")
+    });
     for pressed in [true, false] {
         frame_size(
             app,
@@ -267,6 +283,59 @@ fn pointer_transitions_preserve_pending_editor_input() {
         );
         assert_eq!(app.comments.open, action != "hide");
     }
+}
+
+#[test]
+fn toolbar_history_preserves_the_comment_draft_and_its_page() {
+    let (_root, context, mut app) = saved_comment_editor();
+    app.jump(2);
+    app.comments.editor.as_mut().unwrap().contents = "Unsaved draft 📝".into();
+    let mut position = egui::Pos2::ZERO;
+    let mut draw = |events| {
+        let _ = context.run(
+            RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(1180.0, 820.0),
+                )),
+                events,
+                ..Default::default()
+            },
+            |context| {
+                app.events(context);
+                app.keys(context);
+                app.toolbar(context);
+                position = context
+                    .read_response(app.input_buttons.history_back.unwrap())
+                    .unwrap()
+                    .rect
+                    .center();
+                app.comments_sidebar(context);
+                app.canvas(context);
+            },
+        );
+        position
+    };
+    let mut pos = egui::Pos2::ZERO;
+    for _ in 0..3 {
+        pos = draw(Vec::new());
+    }
+    let mut events = key(Key::A, Modifiers::COMMAND);
+    events.push(Event::Text("Final unsaved draft 📝".into()));
+    events.push(Event::PointerMoved(pos));
+    events.extend([true, false].map(|pressed| Event::PointerButton {
+        pos,
+        pressed,
+        button: egui::PointerButton::Primary,
+        modifiers: Modifiers::NONE,
+    }));
+    draw(events);
+    assert_eq!(app.nav.page, 0);
+    assert!(app.comments.open && app.comments.unsaved());
+    let draft = app.comments.editor.as_ref().unwrap();
+    assert_eq!(draft.contents, "Final unsaved draft 📝");
+    assert_eq!(draft.page, 0);
+    assert!(!app.comments.saving && !app.loading);
 }
 
 #[test]
@@ -689,6 +758,146 @@ fn fully_visible_cards(context: &Context, output: &egui::FullOutput, body: &str)
         .count()
 }
 
+fn focused_card(
+    context: &Context,
+    output: &egui::FullOutput,
+    body: &str,
+) -> Option<egui::Response> {
+    let label = output.shapes.iter().find_map(|shape| match &shape.shape {
+        egui::Shape::Text(text) if text.galley.text() == body => {
+            Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
+        }
+        _ => None,
+    })?;
+    context
+        .memory(|memory| memory.focused())
+        .and_then(|id| context.read_response(id))
+        .filter(|response| response.rect.height() <= 100.0 && response.rect.contains_rect(label))
+}
+
+#[test]
+fn tab_reaches_virtual_comment_cards_and_keeps_the_target_when_resizing() {
+    let (_root, context, mut app) = many_comments();
+    let original = std::fs::read(&app.reading.path).unwrap();
+    let page = app.nav.page;
+    let size = Vec2::new(1180.0, 820.0);
+    context.memory_mut(|memory| memory.request_focus(egui::Id::new("pagewing-comment-filter")));
+    frame(&mut app, &context, Vec::new());
+    let mut focused = None;
+    for _ in 0..50 {
+        frame(&mut app, &context, key(Key::Tab, Modifiers::NONE));
+        let mut output = egui::FullOutput::default();
+        for _ in 0..4 {
+            output = frame(&mut app, &context, Vec::new());
+        }
+        if let Some(response) = focused_card(&context, &output, "Row 24") {
+            focused = Some(response.id);
+            break;
+        }
+    }
+    let focused = focused.expect("Tab must reach a comment beyond the initial virtual range");
+    for resized in [Vec2::new(500.0, 400.0), Vec2::new(240.0, 240.0), size] {
+        for _ in 0..6 {
+            frame_size(&mut app, &context, Vec::new(), resized);
+        }
+        assert_eq!(context.memory(|memory| memory.focused()), Some(focused));
+        assert_eq!(
+            app.nav.page, page,
+            "Tab and resizing must preserve the reading page"
+        );
+        assert!(
+            app.comments.editor.is_none(),
+            "focusing must not open the editor"
+        );
+        let response = context.read_response(focused).unwrap();
+        assert!(
+            response
+                .interact_rect
+                .contains_rect(response.rect.shrink(1.0)),
+            "the focused comment must be fully visible at {resized:?}"
+        );
+    }
+    for target in (0..24).rev() {
+        frame(&mut app, &context, key(Key::Tab, Modifiers::SHIFT));
+        let mut output = egui::FullOutput::default();
+        for _ in 0..4 {
+            output = frame(&mut app, &context, Vec::new());
+        }
+        assert!(
+            focused_card(&context, &output, &format!("Row {target}")).is_some(),
+            "Shift+Tab must reach the preceding virtual card: Row {target}"
+        );
+    }
+    frame(&mut app, &context, key(Key::Space, Modifiers::NONE));
+    assert_eq!(app.comments.editor.as_ref().unwrap().contents, "Row 0");
+    assert_eq!(std::fs::read(&app.reading.path).unwrap(), original);
+}
+
+#[test]
+fn focused_comment_card_takes_resize_priority_over_an_open_editor() {
+    let (_root, context, mut app) = many_comments();
+    let original = std::fs::read(&app.reading.path).unwrap();
+    let page = app.nav.page;
+    app.edit_comment(0, &context);
+    for _ in 0..4 {
+        frame(&mut app, &context, Vec::new());
+    }
+    let mut focused = None;
+    for _ in 0..8 {
+        frame(&mut app, &context, key(Key::Tab, Modifiers::SHIFT));
+        let mut output = egui::FullOutput::default();
+        for _ in 0..4 {
+            output = frame(&mut app, &context, Vec::new());
+        }
+        if let Some(response) = focused_card(&context, &output, "Row 1") {
+            focused = Some(response.id);
+            break;
+        }
+    }
+    let focused = focused.expect("Shift+Tab must move from the editor into the list");
+    app.comments.editor.as_mut().unwrap().contents = "Unsaved draft".into();
+    for size in [Vec2::new(500.0, 400.0), Vec2::new(240.0, 240.0)] {
+        for _ in 0..6 {
+            frame_size(&mut app, &context, Vec::new(), size);
+        }
+        assert_eq!(context.memory(|memory| memory.focused()), Some(focused));
+        let response = context.read_response(focused).unwrap();
+        assert!(
+            response
+                .interact_rect
+                .contains_rect(response.rect.shrink(1.0)),
+            "{size:?}: card={:?}, visible={:?}",
+            response.rect,
+            response.interact_rect
+        );
+        assert_eq!(
+            app.comments.editor.as_ref().unwrap().contents,
+            "Unsaved draft"
+        );
+        assert_eq!(app.nav.page, page);
+    }
+    frame_size(
+        &mut app,
+        &context,
+        key(Key::Space, Modifiers::NONE),
+        Vec2::new(240.0, 240.0),
+    );
+    assert_eq!(
+        app.comments.editor.as_ref().unwrap().contents,
+        "Unsaved draft"
+    );
+    assert_eq!(context.memory(|memory| memory.focused()), Some(focused));
+    app.comments.editor.as_mut().unwrap().contents = "Row 0".into();
+    frame_size(
+        &mut app,
+        &context,
+        key(Key::Space, Modifiers::NONE),
+        Vec2::new(240.0, 240.0),
+    );
+    assert_eq!(app.comments.editor.as_ref().unwrap().contents, "Row 1");
+    assert_eq!(std::fs::read(&app.reading.path).unwrap(), original);
+}
+
 #[test]
 fn page_navigation_uses_visible_card_geometry_and_keeps_drafts_safe() {
     let (_root, context, mut app) = many_comments();
@@ -865,9 +1074,15 @@ fn opening_and_resizing_the_editor_reveals_its_comment_card() {
     }
     // Opening a page overlay may choose a card outside the virtual rows.
     app.edit_comment(79, &context);
-    for size in [Vec2::new(1180.0, 820.0), Vec2::new(640.0, 480.0)] {
+    for size in [
+        Vec2::new(1180.0, 820.0),
+        Vec2::new(500.0, 400.0),
+        Vec2::new(640.0, 480.0),
+    ] {
+        frame_size(&mut app, &context, key(Key::A, Modifiers::COMMAND), size);
+        frame_size(&mut app, &context, key(Key::C, Modifiers::COMMAND), size);
         let mut output = egui::FullOutput::default();
-        for _ in 0..4 {
+        for _ in 0..30 {
             output = frame_size(&mut app, &context, Vec::new(), size);
         }
         assert!(
@@ -901,6 +1116,43 @@ fn opening_and_resizing_the_editor_reveals_its_comment_card() {
         "with editor focus, resize reveals the active draft rather than the filter's first match"
     );
     assert_eq!(app.comments.view.selected(), Some(0));
+    assert_eq!(app.comments.editor.as_ref().unwrap().contents, "Row 79");
+}
+
+#[test]
+fn growing_after_editor_selection_in_minimum_windows_reveals_its_card() {
+    let (_root, context, mut app) = many_comments();
+    app.comments.view.filter.query = "Row".into();
+    app.edit_comment(79, &context);
+    for size in [
+        Vec2::new(1180.0, 820.0),
+        Vec2::new(640.0, 480.0),
+        Vec2::new(240.0, 400.0),
+        Vec2::new(240.0, 240.0),
+    ] {
+        for _ in 0..4 {
+            frame_size(&mut app, &context, Vec::new(), size);
+        }
+        frame_size(&mut app, &context, key(Key::Home, Modifiers::COMMAND), size);
+        frame_size(
+            &mut app,
+            &context,
+            key(Key::ArrowRight, Modifiers::SHIFT),
+            size,
+        );
+        for _ in 0..30 {
+            frame_size(&mut app, &context, Vec::new(), size);
+        }
+    }
+    let mut output = egui::FullOutput::default();
+    for _ in 0..30 {
+        output = frame_size(&mut app, &context, Vec::new(), Vec2::new(640.0, 480.0));
+    }
+    assert!(
+        visible_selected_card(&context, &output, "Row 79").is_some(),
+        "growing the window must reveal the editor's card inside both scroll areas"
+    );
+    assert!(context.memory(|memory| memory.has_focus(egui::Id::new("pagewing-comment-input"))));
     assert_eq!(app.comments.editor.as_ref().unwrap().contents, "Row 79");
 }
 
@@ -1471,4 +1723,346 @@ fn comment_filter_keyboard_confirms_new_query_and_protects_editor_drafts() {
     assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == "Deepest needle")));
     frame(&mut app, &context, key(Key::Enter, Modifiers::NONE));
     assert_eq!(app.comments.editor.as_ref().unwrap().slot, Some(127));
+}
+
+#[test]
+fn copy_shown_comments_fits_resizing_and_keeps_unsaved_draft_and_pdf() {
+    let (_root, context, mut app) = saved_comment_editor();
+    let original_pdf = std::fs::read(&app.reading.path).unwrap();
+    app.comments.editor.as_mut().unwrap().contents = "Unpublished draft 中文😀".into();
+    app.comments.view.filter.query = "Original".into();
+    let mut sizes = super::super::dialog::TEST_SIZES.to_vec();
+    sizes.push(egui::vec2(240.0, 240.0));
+    for size in sizes {
+        let mut output = egui::FullOutput::default();
+        for _ in 0..4 {
+            output = frame_size(&mut app, &context, Vec::new(), size);
+        }
+        let (bounds, clip) = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == "Copy" => Some((
+                    egui::Rect::from_min_size(text.pos, text.galley.size()),
+                    shape.clip_rect,
+                )),
+                _ => None,
+            })
+            .expect("copy action must be visible");
+        assert!(
+            clip.contains_rect(bounds),
+            "{size:?}: {bounds:?} / {clip:?}"
+        );
+        assert!(egui::Rect::from_min_size(egui::Pos2::ZERO, size).contains_rect(bounds));
+        let mut copied = None;
+        for pressed in [true, false] {
+            let output = frame_size(
+                &mut app,
+                &context,
+                vec![
+                    Event::PointerMoved(bounds.center()),
+                    Event::PointerButton {
+                        pos: bounds.center(),
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Modifiers::NONE,
+                    },
+                ],
+                size,
+            );
+            for command in output.platform_output.commands {
+                if let egui::OutputCommand::CopyText(text) = command {
+                    copied = Some(text);
+                }
+            }
+        }
+        let copied = copied.expect("click must copy the saved filtered list");
+        assert!(copied.contains("Original comment"));
+        assert!(!copied.contains("Unpublished draft"));
+        assert_eq!(
+            app.comments.editor.as_ref().unwrap().contents,
+            "Unpublished draft 中文😀"
+        );
+        assert!(app.comments.unsaved());
+        assert_eq!(app.comments.view.filter.query, "Original");
+        assert_eq!(app.nav.page, 0);
+        assert_eq!(std::fs::read(&app.reading.path).unwrap(), original_pdf);
+    }
+}
+
+#[test]
+fn copy_shown_comments_includes_virtual_rows_and_leaves_clipboard_alone_when_empty() {
+    let (_root, context, mut app) = many_comments();
+    frame(&mut app, &context, Vec::new());
+    let selected = app.comments.view.selected();
+    let output = context.run(RawInput::default(), |context| {
+        app.copy_shown_comments(context)
+    });
+    let text = output
+        .platform_output
+        .commands
+        .iter()
+        .find_map(|command| match command {
+            egui::OutputCommand::CopyText(text) => Some(text),
+            _ => None,
+        })
+        .unwrap();
+    assert!(text.contains("Row 0\n\n"));
+    assert!(text.contains("Row 79\n\n"));
+    assert_eq!(text.matches("Page 1 · Highlight\n").count(), 80);
+    assert_eq!(app.comments.view.selected(), selected);
+    app.comments.view.filter.query = "missing".into();
+    app.comments.view.update(&app.comments.comments, 0);
+    let output = context.run(RawInput::default(), |context| {
+        app.copy_shown_comments(context)
+    });
+    assert!(
+        !output
+            .platform_output
+            .commands
+            .iter()
+            .any(|command| matches!(command, egui::OutputCommand::CopyText(_)))
+    );
+}
+
+#[test]
+fn copying_saved_list_preserves_text_typed_in_the_pointer_press_batch() {
+    let (_root, context, mut app) = saved_comment_editor();
+    let output = frame(&mut app, &context, Vec::new());
+    let point = output
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.text() == "Copy" => {
+                Some(text.pos + text.galley.size() * 0.5)
+            }
+            _ => None,
+        })
+        .unwrap();
+    for pressed in [true, false] {
+        let mut events = vec![Event::PointerMoved(point)];
+        if pressed {
+            events.push(Event::Text(" Final 中文😀".into()));
+        }
+        events.push(Event::PointerButton {
+            pos: point,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+        frame(&mut app, &context, events);
+    }
+    assert!(
+        app.comments
+            .editor
+            .as_ref()
+            .unwrap()
+            .contents
+            .contains("Final 中文😀")
+    );
+    assert!(app.comments.unsaved());
+}
+
+#[test]
+fn focused_comment_copy_uses_activation_keys_without_scrolling_or_toggling_sidebar() {
+    for (size, activation) in [Vec2::new(1180.0, 820.0), Vec2::new(240.0, 240.0)]
+        .into_iter()
+        .flat_map(|size| [Key::Enter, Key::Space, Key::Tab].map(|key| (size, key)))
+    {
+        let (_root, context, mut app) = many_comments();
+        app.reading.fit = crate::navigation::Fit::Custom(2.0);
+        let mut output = egui::FullOutput::default();
+        for _ in 0..3 {
+            output = frame_size(&mut app, &context, Vec::new(), size);
+        }
+        let copy_center = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == "Copy" => {
+                    Some(text.pos + text.galley.size() * 0.5)
+                }
+                _ => None,
+            })
+            .unwrap();
+        let copy_focused = |context: &Context| {
+            context
+                .memory(|memory| memory.focused())
+                .and_then(|id| context.read_response(id))
+                .is_some_and(|response| response.rect.contains(copy_center))
+        };
+        context.memory_mut(|memory| memory.request_focus(egui::Id::new("pagewing-comment-filter")));
+        frame_size(&mut app, &context, Vec::new(), size);
+        // A narrow panel also exposes its scroll area's focus stop. Traverse
+        // real controls rather than assuming one fixed Tab count at every size.
+        for _ in 0..4 {
+            frame_size(&mut app, &context, key(Key::Tab, Modifiers::SHIFT), size);
+            // egui applies backward traversal at the next frame boundary.
+            frame_size(&mut app, &context, Vec::new(), size);
+            if copy_focused(&context) {
+                break;
+            }
+        }
+        assert!(copy_focused(&context), "Copy must be reachable at {size:?}");
+        let pan = app.pan;
+        let sidebar = app.library.sidebar;
+        let output = frame_size(&mut app, &context, key(activation, Modifiers::NONE), size);
+        assert_eq!(
+            app.library.sidebar, sidebar,
+            "{activation:?} belongs to the focused control"
+        );
+        assert_eq!(app.pan, pan, "{activation:?} must not scroll the PDF");
+        assert_eq!(app.nav.page, 0);
+        if activation != Key::Tab {
+            assert!(output.platform_output.commands.iter().any(|command| matches!(command, egui::OutputCommand::CopyText(text) if text.contains("Row 79"))), "{activation:?} must activate Copy");
+        } else {
+            for _ in 0..3 {
+                if app.comment_filter_focused(&context) {
+                    break;
+                }
+                frame_size(&mut app, &context, key(Key::Tab, Modifiers::NONE), size);
+                assert_eq!(
+                    app.library.sidebar, sidebar,
+                    "scroll-area Tab stays in the controls"
+                );
+            }
+            assert!(
+                app.comment_filter_focused(&context),
+                "Tab returns to the filter"
+            );
+        }
+    }
+}
+
+#[test]
+fn reader_tab_binding_still_toggles_sidebar_after_leaving_comment_controls() {
+    let (_root, context, mut app) = many_comments();
+    context.memory_mut(|memory| {
+        if let Some(id) = memory.focused() {
+            memory.surrender_focus(id);
+        }
+    });
+    frame(&mut app, &context, Vec::new());
+    let before = app.library.sidebar;
+    frame(&mut app, &context, key(Key::Tab, Modifiers::NONE));
+    assert_eq!(
+        app.library.sidebar, !before,
+        "reader Tab keeps its binding while comments are open"
+    );
+    context.memory_mut(|memory| memory.request_focus(egui::Id::new("pagewing-comment-filter")));
+    frame(&mut app, &context, Vec::new());
+    frame(&mut app, &context, key(Key::Tab, Modifiers::SHIFT));
+    frame(&mut app, &context, Vec::new());
+    app.set_comments_open(&context, false);
+    let before = app.library.sidebar;
+    frame(&mut app, &context, key(Key::Tab, Modifiers::NONE));
+    assert_eq!(
+        app.library.sidebar, !before,
+        "hidden controls cannot claim Tab"
+    );
+    assert!(!app.comments.open);
+}
+
+#[test]
+fn comment_filters_keep_the_panel_inside_narrow_windows_for_every_status() {
+    let (_root, context, mut app) = many_comments();
+    let template = app.comments.comments.items[0].clone();
+    for editing in [false, true] {
+        app.comments.editor = editing.then(|| template.clone());
+        app.comments.focus = false;
+        for size in [
+            Vec2::new(240.0, 240.0),
+            Vec2::new(240.0, 400.0),
+            Vec2::new(360.0, 540.0),
+            Vec2::new(480.0, 420.0),
+            Vec2::new(1180.0, 820.0),
+        ] {
+            for review in std::iter::once(None).chain(ReviewStatus::ALL.map(Some)) {
+                app.comments.view.filter.review = review;
+                if let Some(editor) = &mut app.comments.editor {
+                    editor.review = review.unwrap_or_default();
+                }
+                for _ in 0..4 {
+                    frame_size(&mut app, &context, Vec::new(), size);
+                }
+                let (_, panel) = app.comments.region.unwrap();
+                let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+                assert!(
+                    screen.contains_rect(panel),
+                    "{size:?}, {review:?}, editor {editing}: {panel:?} outside screen"
+                );
+                // The sidebar reserves 120 logical pixels for the canvas;
+                // its own page padding is excluded from Pagewing::viewport.
+                assert!(
+                    panel.left() >= 120.0,
+                    "{size:?}, {review:?}: {panel:?} collapsed the canvas"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn narrow_comment_status_menu_keeps_full_labels_selectable() {
+    let (_root, context, mut app) = many_comments();
+    for size in [Vec2::new(240.0, 400.0), Vec2::new(360.0, 540.0)] {
+        for _ in 0..4 {
+            frame_size(&mut app, &context, Vec::new(), size);
+        }
+        click_text_size(&mut app, &context, "All statuses", size);
+        let mut output = egui::FullOutput::default();
+        for _ in 0..4 {
+            output = frame_size(&mut app, &context, Vec::new(), size);
+        }
+        assert!(egui::Popup::is_any_open(&context));
+        let label = "Completed / resolved";
+        let label_rect = |output: &egui::FullOutput| {
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.text() == label => Some((
+                        egui::Rect::from_min_size(text.pos, text.galley.size()),
+                        shape.clip_rect,
+                    )),
+                    _ => None,
+                })
+                .expect("the longest status keeps its full label in the menu")
+        };
+        let (text, clip) = label_rect(&output);
+        // Small windows scroll the menu; its last option must become fully
+        // readable and clickable rather than losing its wrapped lines.
+        frame_size(
+            &mut app,
+            &context,
+            vec![
+                Event::PointerMoved(clip.shrink(5.0).clamp(text.center())),
+                Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: Vec2::new(0.0, -400.0),
+                    modifiers: Modifiers::NONE,
+                },
+            ],
+            size,
+        );
+        for _ in 0..30 {
+            output = frame_size(&mut app, &context, Vec::new(), size);
+        }
+        let (text, clip) = label_rect(&output);
+        assert!(
+            clip.contains_rect(text),
+            "{size:?}: {text:?} clipped by {clip:?}"
+        );
+        assert!(egui::Rect::from_min_size(egui::Pos2::ZERO, size).contains_rect(text));
+        click_text_size(&mut app, &context, label, size);
+        assert_eq!(
+            app.comments.view.filter.review,
+            Some(ReviewStatus::Completed)
+        );
+        assert!(app.comments.view.rows().is_empty());
+        assert!(!egui::Popup::is_any_open(&context));
+        click_text_size(&mut app, &context, "Clear filters", size);
+        assert_eq!(app.comments.view.filter, CommentFilter::default());
+        assert_eq!(app.comments.view.rows().len(), 80);
+    }
 }

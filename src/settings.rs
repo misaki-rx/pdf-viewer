@@ -279,6 +279,20 @@ pub fn commands() -> &'static [Command] {
                 "Alt+ArrowRight",
                 "Alt+ArrowRight|Ctrl+I",
             ),
+            (
+                "next_chapter",
+                "Next chapter start",
+                false,
+                "Alt+ArrowDown",
+                "Alt+ArrowDown",
+            ),
+            (
+                "previous_chapter",
+                "Previous chapter start",
+                false,
+                "Alt+ArrowUp",
+                "Alt+ArrowUp",
+            ),
             ("next_bookmark", "Next bookmark", false, "Alt+J", "Alt+J"),
             (
                 "previous_bookmark",
@@ -369,6 +383,13 @@ pub fn commands() -> &'static [Command] {
             ("goto", "Go to page dialog", false, "Colon", "Colon"),
             ("help", "Keyboard shortcuts", false, "F1", "Questionmark|F1"),
             ("fullscreen", "Toggle fullscreen", false, "F11", "F11"),
+            (
+                "reading_controls",
+                "Toggle reading controls",
+                false,
+                "F9",
+                "F9",
+            ),
         ]
         .into_iter()
         .map(|(id, label, global, canonical, defaults)| Command {

@@ -1,0 +1,292 @@
+use eframe::egui::{self, Event, Id, Key, Modifiers, Response};
+use std::collections::{HashMap, VecDeque};
+
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum Target {
+    Document,
+    Control,
+}
+
+pub(super) fn control_menu_open(context: &egui::Context) -> bool {
+    control_source(context).is_some()
+}
+
+/// Keep the popup's source in a virtual list while its item owns keyboard focus.
+pub(super) fn control_source(context: &egui::Context) -> Option<Id> {
+    open_menu(context)
+        .filter(|menu| menu.target == Target::Control)
+        .map(|menu| menu.owner.widget)
+}
+
+fn open_menu(context: &egui::Context) -> Option<OpenMenu> {
+    context
+        .data(|data| data.get_temp::<OpenMenu>(Id::new("pagewing-open-copy-menu")))
+        .filter(|menu| egui::Popup::is_id_open(context, menu.owner.menu))
+}
+
+#[derive(Clone, Copy)]
+struct Owner {
+    widget: Id,
+    menu: Id,
+}
+
+#[derive(Clone, Copy)]
+struct OpenMenu {
+    owner: Owner,
+    target: Target,
+}
+
+#[derive(Clone, Copy, Default, PartialEq)]
+struct State {
+    keyboard: bool,
+    opening: bool,
+    was_open: bool,
+    copy_requested: bool,
+}
+
+#[derive(Clone)]
+struct Entry {
+    menu: Id,
+    seen: u64,
+    enabled: bool,
+    state: State,
+}
+
+#[derive(Clone, Default)]
+struct Registry {
+    frame: Option<u64>,
+    owners: HashMap<Id, Entry>,
+}
+
+impl Registry {
+    fn register(&mut self, widget: Id, menu: Id, frame: u64, enabled: bool) -> &mut Entry {
+        if self.frame != Some(frame) {
+            // Input uses the preceding frame before widgets are drawn. Keep
+            // that generation, including any discarded sizing passes.
+            self.owners
+                .retain(|_, entry| entry.seen >= frame.saturating_sub(1));
+            self.frame = Some(frame);
+        }
+        let entry = self.owners.entry(widget).or_insert(Entry {
+            menu,
+            seen: frame,
+            enabled,
+            state: State::default(),
+        });
+        if entry.menu != menu {
+            // Query revisions can reuse a widget ID, but not its menu action.
+            entry.menu = menu;
+            entry.state = State::default();
+        }
+        entry.seen = frame;
+        entry.enabled = enabled;
+        entry
+    }
+}
+
+fn registry_id() -> Id {
+    Id::new("pagewing-copy-menu-registry")
+}
+
+fn with_registry<R>(context: &egui::Context, use_registry: impl FnOnce(&mut Registry) -> R) -> R {
+    context.data_mut(|data| use_registry(data.get_temp_mut_or_default::<Registry>(registry_id())))
+}
+
+pub(super) fn clear(context: &egui::Context) {
+    context.data_mut(|data| {
+        data.remove::<Registry>(registry_id());
+        data.remove::<OpenMenu>(Id::new("pagewing-open-copy-menu"));
+    });
+}
+
+fn focused_owner(context: &egui::Context) -> Option<Owner> {
+    let widget = context.memory(|memory| memory.focused())?;
+    let frame = context.cumulative_frame_nr();
+    let menu = with_registry(context, |registry| {
+        registry
+            .owners
+            .get(&widget)
+            .filter(|entry| entry.enabled && entry.seen >= frame.saturating_sub(1))
+            .map(|entry| entry.menu)
+    })?;
+    let owner = Owner { widget, menu };
+    let _focus = super::shortcuts::preserve_pointer_focus(context);
+    context
+        .read_response(owner.widget)
+        .filter(|response| response.enabled() && response.has_focus())
+        .map(|_| owner)
+}
+
+pub(super) fn request_copy(context: &egui::Context) -> bool {
+    let Some(owner) = focused_owner(context) else {
+        return false;
+    };
+    with_registry(context, |registry| {
+        registry
+            .owners
+            .get_mut(&owner.widget)
+            .unwrap()
+            .state
+            .copy_requested = true;
+    });
+    context.input_mut(|input| input.events.retain(|event| !matches!(event, Event::Copy)));
+    true
+}
+
+pub(super) fn open(context: &egui::Context, key: Key, modifiers: Modifiers) -> bool {
+    if key != Key::F10 || modifiers != Modifiers::SHIFT {
+        return false;
+    }
+    let Some(owner) = focused_owner(context) else {
+        return false;
+    };
+    with_registry(context, |registry| {
+        let state = &mut registry.owners.get_mut(&owner.widget).unwrap().state;
+        state.keyboard = true;
+        state.opening = true;
+        state.was_open = true;
+    });
+    egui::Popup::open_id(context, owner.menu);
+    true
+}
+
+/// Let a context menu establish its item focus before later native input.
+pub(super) fn input_split(
+    context: &egui::Context,
+    events: &VecDeque<Event>,
+    limit: usize,
+) -> Option<usize> {
+    let menu_open = open_menu(context).is_some();
+    let opener = events.iter().take(limit).position(|event| match event {
+        Event::PointerButton {
+            button: egui::PointerButton::Secondary,
+            pressed: false,
+            ..
+        } => true,
+        Event::Key {
+            key: Key::F10,
+            pressed: true,
+            modifiers,
+            ..
+        } => *modifiers == Modifiers::SHIFT && focused_owner(context).is_some(),
+        Event::Key {
+            key: Key::Enter | Key::Space | Key::Escape,
+            pressed: true,
+            modifiers,
+            ..
+        } => menu_open && modifiers.is_none(),
+        Event::Copy => menu_open,
+        Event::PointerButton {
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            ..
+        } => menu_open,
+        _ => false,
+    })?;
+    events
+        .iter()
+        .take(limit)
+        .enumerate()
+        .skip(opener + 1)
+        .find_map(|(index, event)| super::focus_input::changes_input(event).then_some(index))
+}
+
+/// Focus owns keyboard copying; popup IDs scope requests to the current source.
+/// Only an actual copy allocates text. Keyboard menus follow their owner on resize.
+pub(super) fn show(response: &Response, id: Id, label: &str, text: &str, target: Target) -> bool {
+    let frame = response.ctx.cumulative_frame_nr();
+    // Shift+Tab can take effect before this row is drawn. Register all visible
+    // sources, rather than only the focused one, for the next input pass.
+    let mut state = with_registry(&response.ctx, |registry| {
+        std::mem::take(
+            &mut registry
+                .register(response.id, id, frame, response.enabled())
+                .state,
+        )
+    });
+    let mut copied =
+        std::mem::take(&mut state.copy_requested) && response.has_focus() && response.enabled();
+    if copied {
+        response.ctx.copy_text(text.to_owned());
+    }
+    if response.secondary_clicked() {
+        state = State::default();
+    }
+    let opening = std::mem::take(&mut state.opening);
+    let popup = if state.keyboard {
+        egui::Popup::menu(response).open_memory(None)
+    } else {
+        egui::Popup::context_menu(response)
+    };
+    popup.id(id).show(|ui| {
+        let copy = ui.button(label);
+        if response.secondary_clicked() || opening {
+            copy.request_focus();
+        }
+        ui.memory_mut(|memory| {
+            memory.set_focus_lock_filter(
+                copy.id,
+                egui::EventFilter {
+                    tab: true,
+                    horizontal_arrows: true,
+                    vertical_arrows: true,
+                    ..Default::default()
+                },
+            );
+        });
+        let copy_shortcut = copy.has_focus()
+            && ui.input_mut(|input| {
+                let mut requested = false;
+                input.events.retain(|event| {
+                    if matches!(event, Event::Copy) {
+                        requested = true;
+                        false
+                    } else {
+                        true
+                    }
+                });
+                requested
+            });
+        if copy.clicked() || copy_shortcut {
+            ui.ctx().copy_text(text.to_owned());
+            copied = true;
+            ui.close();
+        }
+    });
+    let open = egui::Popup::is_id_open(&response.ctx, id);
+    if open {
+        response.ctx.data_mut(|data| {
+            data.insert_temp(
+                Id::new("pagewing-open-copy-menu"),
+                OpenMenu {
+                    owner: Owner {
+                        widget: response.id,
+                        menu: id,
+                    },
+                    target,
+                },
+            );
+        });
+    }
+    if state.keyboard && state.was_open && !open {
+        // A mouse dismissal can focus another control before this row is
+        // drawn. Preserve that choice; keyboard closure returns to the row.
+        if copied || !response.ctx.input(|input| input.pointer.any_click()) {
+            response.request_focus();
+        }
+        response.ctx.request_repaint();
+        state.keyboard = false;
+    }
+    state.was_open = open;
+    with_registry(&response.ctx, |registry| {
+        if let Some(entry) = registry.owners.get_mut(&response.id)
+            && entry.menu == id
+        {
+            entry.state = state;
+        }
+    });
+    copied
+}
+
+#[cfg(test)]
+mod tests;

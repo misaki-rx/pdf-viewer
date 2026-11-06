@@ -113,6 +113,8 @@ night = []
 | `history_forward` | Jump history forward |
 | `next_bookmark` | Next bookmark |
 | `previous_bookmark` | Previous bookmark |
+| `next_chapter` | Next chapter start (`Alt+ArrowDown`) |
+| `previous_chapter` | Previous chapter start (`Alt+ArrowUp`) |
 | `zoom_in` | Zoom in |
 | `zoom` | Set an exact zoom percentage (`Cmd+Alt+Z`) |
 | `zoom_out` | Zoom out |
@@ -139,6 +141,7 @@ night = []
 | `goto` | Go to page dialog |
 | `help` | Keyboard shortcuts |
 | `fullscreen` | Toggle fullscreen |
+| `reading_controls` | Toggle reading controls |
 
 ## 错误与阅读记录
 

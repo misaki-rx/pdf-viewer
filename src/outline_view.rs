@@ -6,8 +6,11 @@ use std::collections::HashSet;
 pub struct OutlineView {
     entries: Vec<OutlineEntry>,
     folded_titles: Vec<String>,
+    // Reuse one byte per entry across filter edits; reset with the document.
+    filter_matches: Vec<bool>,
     parents: Vec<Option<usize>>,
     subtree_end: Vec<usize>,
+    chapter_starts: Vec<(usize, usize)>,
     collapsed: HashSet<usize>,
     visible: Vec<usize>,
     selected: Option<usize>,
@@ -20,23 +23,57 @@ pub struct OutlineView {
 
 impl OutlineView {
     pub fn set_entries(&mut self, entries: Vec<OutlineEntry>) {
-        *self = Self::default();
-        self.subtree_end = vec![entries.len(); entries.len()];
+        *self = Self::prepare(entries, || false).unwrap();
+    }
+
+    /// Prepare searchable titles and tree indexes before handing a loaded
+    /// document to the UI. A superseded load can stop between bounded batches.
+    pub fn prepare(
+        entries: Vec<OutlineEntry>,
+        mut cancelled: impl FnMut() -> bool,
+    ) -> Option<Self> {
+        if cancelled() {
+            return None;
+        }
+        let mut prepared = Self {
+            subtree_end: vec![entries.len(); entries.len()],
+            parents: Vec::with_capacity(entries.len()),
+            folded_titles: Vec::with_capacity(entries.len()),
+            visible: Vec::with_capacity(entries.len()),
+            ..Default::default()
+        };
         let mut ancestors: Vec<usize> = Vec::new();
         for (index, entry) in entries.iter().enumerate() {
+            if index != 0 && index % 64 == 0 && cancelled() {
+                return None;
+            }
             while ancestors
                 .last()
                 .is_some_and(|&parent| entries[parent].depth >= entry.depth)
             {
-                self.subtree_end[ancestors.pop().unwrap()] = index;
+                prepared.subtree_end[ancestors.pop().unwrap()] = index;
             }
-            self.parents.push(ancestors.last().copied());
+            prepared.parents.push(ancestors.last().copied());
             ancestors.push(index);
-            self.folded_titles
-                .push(caseless::default_case_fold_str(&entry.title));
+            if let Some(destination) = entry.destination {
+                prepared.chapter_starts.push((destination.page, index));
+            }
+            prepared
+                .folded_titles
+                .push(crate::case_fold::fold(&entry.title));
         }
-        self.entries = entries;
-        self.refilter();
+        if cancelled() {
+            return None;
+        }
+        // Destinations need not follow tree order. On the same page, prefer
+        // the later navigable entry, typically the more specific heading.
+        prepared
+            .chapter_starts
+            .sort_unstable_by_key(|&(page, index)| (page, std::cmp::Reverse(index)));
+        prepared.chapter_starts.dedup_by_key(|entry| entry.0);
+        prepared.entries = entries;
+        prepared.refilter();
+        (!cancelled()).then_some(prepared)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -53,6 +90,70 @@ impl OutlineView {
 
     pub fn selected(&self) -> Option<usize> {
         self.selected
+    }
+
+    pub fn chapter_at(&self, page: usize) -> Option<usize> {
+        let end = self
+            .chapter_starts
+            .partition_point(|&(start, _)| start <= page);
+        end.checked_sub(1).map(|index| self.chapter_starts[index].1)
+    }
+
+    /// Move among distinct start pages, independent of filtering or folding.
+    /// Previous returns the current chapter's start when reading its later
+    /// pages. Counts clamp at either end; navigation never wraps.
+    pub fn chapter_target(
+        &self,
+        page: usize,
+        reverse: bool,
+        count: usize,
+    ) -> Option<crate::destination::Destination> {
+        let delta = count.saturating_sub(1);
+        let row = if reverse {
+            self.chapter_starts
+                .partition_point(|&(start, _)| start < page)
+                .checked_sub(1)?
+                .saturating_sub(delta)
+        } else {
+            let first = self
+                .chapter_starts
+                .partition_point(|&(start, _)| start <= page);
+            if first == self.chapter_starts.len() {
+                return None;
+            }
+            first
+                .saturating_add(delta)
+                .min(self.chapter_starts.len() - 1)
+        };
+        self.entries[self.chapter_starts[row].1].destination
+    }
+
+    /// Show the nearest visible ancestor if the active chapter is folded away
+    /// or excluded by the filter. Reading never changes the user's folds.
+    pub fn visible_chapter_at(&self, page: usize) -> Option<usize> {
+        let mut chapter = self.chapter_at(page);
+        while let Some(index) = chapter {
+            if self.visible.binary_search(&index).is_ok() {
+                return Some(index);
+            }
+            chapter = self.parents[index];
+        }
+        None
+    }
+
+    pub fn reveal_chapter_at(&mut self, page: usize) -> bool {
+        let Some(index) = self.chapter_at(page) else {
+            return false;
+        };
+        self.query.clear();
+        let mut parent = self.parents[index];
+        while let Some(index) = parent {
+            self.collapsed.remove(&index);
+            parent = self.parents[index];
+        }
+        self.selected = Some(index);
+        self.refilter();
+        true
     }
 
     pub fn selected_row(&self) -> Option<usize> {
@@ -128,20 +229,18 @@ impl OutlineView {
     pub fn refilter(&mut self) {
         self.visible.clear();
         if self.filtering() {
-            let query = caseless::default_case_fold_str(self.query.trim());
+            let query = crate::case_fold::fold(self.query.trim());
             let words: Vec<_> = query
                 .split_whitespace()
                 .map(memchr::memmem::Finder::new)
                 .collect();
-            let mut keep: Vec<_> = self
-                .folded_titles
-                .iter()
-                .map(|title| {
-                    words
-                        .iter()
-                        .all(|word| word.find(title.as_bytes()).is_some())
-                })
-                .collect();
+            let mut keep = std::mem::take(&mut self.filter_matches);
+            keep.clear();
+            keep.extend(self.folded_titles.iter().map(|title| {
+                words
+                    .iter()
+                    .all(|word| word.find(title.as_bytes()).is_some())
+            }));
             // Ancestors provide context, but Enter should initially follow a
             // title match rather than the first retained parent.
             if !self.selected.is_some_and(|index| keep[index]) {
@@ -157,6 +256,7 @@ impl OutlineView {
             }
             self.visible
                 .extend((0..keep.len()).filter(|&index| keep[index]));
+            self.filter_matches = keep;
         } else {
             let mut index = 0;
             while index < self.entries.len() {
@@ -187,6 +287,170 @@ impl OutlineView {
 mod tests {
     use super::*;
 
+    #[test]
+    fn counted_chapter_targets_match_distinct_starts_and_keep_exact_destinations() {
+        use crate::destination::Destination;
+        let mut tree = OutlineView::default();
+        let mut random = 91_u64;
+        let entries: Vec<_> = (0..237)
+            .map(|index| {
+                random = random.wrapping_mul(6364136223846793005).wrapping_add(1);
+                OutlineEntry {
+                    title: format!("Chapter {index}"),
+                    depth: index % 4,
+                    destination: (!random.is_multiple_of(3)).then(|| Destination {
+                        zoom: Some(index as f32 + 1.0),
+                        position: [Some(index as f64), Some(17.0)],
+                        ..Destination::page((random >> 16) as usize % 200 + 2)
+                    }),
+                }
+            })
+            .collect();
+        let mut starts = std::collections::BTreeMap::new();
+        for entry in &entries {
+            if let Some(destination) = entry.destination {
+                starts.insert(destination.page, destination);
+            }
+        }
+        tree.set_entries(entries);
+        tree.fold_all(true);
+        tree.query = "absent".into();
+        tree.refilter();
+        assert!(tree.visible().is_empty());
+        for page in 0..220 {
+            for reverse in [false, true] {
+                let mut candidates: Vec<_> = starts
+                    .values()
+                    .copied()
+                    .filter(|destination| {
+                        if reverse {
+                            destination.page < page
+                        } else {
+                            destination.page > page
+                        }
+                    })
+                    .collect();
+                if reverse {
+                    candidates.reverse();
+                }
+                for count in [0_usize, 1, 2, 7, usize::MAX] {
+                    let expected = candidates
+                        .get(count.saturating_sub(1))
+                        .or_else(|| candidates.last())
+                        .copied();
+                    assert_eq!(
+                        tree.chapter_target(page, reverse, count),
+                        expected,
+                        "page {page}, reverse {reverse}, count {count}"
+                    );
+                }
+            }
+        }
+        assert_eq!(tree.query, "absent");
+        tree.set_entries(Vec::new());
+        for reverse in [false, true] {
+            assert_eq!(tree.chapter_target(usize::MAX, reverse, usize::MAX), None);
+        }
+    }
+
+    #[test]
+    fn current_chapters_follow_page_starts_and_reveal_only_their_ancestors() {
+        let mut tree = OutlineView::default();
+        tree.set_entries(
+            [
+                (0, "Part", None),
+                (1, "Later", Some(5)),
+                (2, "Later child", Some(9)),
+                (1, "Earlier", Some(2)),
+                (2, "Earlier detail", Some(2)),
+                (0, "Other root", Some(20)),
+                (1, "Other child", Some(25)),
+            ]
+            .into_iter()
+            .map(|(depth, title, page)| OutlineEntry {
+                title: title.into(),
+                depth,
+                destination: page.map(crate::destination::Destination::page),
+            })
+            .collect(),
+        );
+        for (page, expected) in [
+            (0, None),
+            (2, Some(4)),
+            (4, Some(4)),
+            (5, Some(1)),
+            (11, Some(2)),
+            (24, Some(5)),
+            (99, Some(6)),
+        ] {
+            assert_eq!(tree.chapter_at(page), expected);
+        }
+        tree.fold_all(true);
+        assert_eq!(tree.visible_chapter_at(4), Some(0));
+        assert_eq!(tree.visible_chapter_at(24), Some(5));
+        tree.query = "Later".into();
+        tree.refilter();
+        assert_eq!(tree.visible_chapter_at(4), Some(0));
+        assert_eq!(tree.visible_chapter_at(24), None);
+        assert!(tree.reveal_chapter_at(4));
+        assert!(tree.query.is_empty());
+        assert_eq!(tree.selected(), Some(4));
+        assert_eq!(tree.visible_chapter_at(4), Some(4));
+        assert_eq!(tree.visible(), [0, 1, 3, 4, 5]);
+        assert!(tree.is_collapsed(1) && tree.is_collapsed(5));
+        assert!(!tree.is_collapsed(0) && !tree.is_collapsed(3));
+        tree.query = "Other".into();
+        tree.refilter();
+        let selected = tree.selected();
+        assert!(!tree.reveal_chapter_at(0));
+        assert_eq!(tree.query, "Other");
+        assert_eq!(tree.selected(), selected);
+    }
+
+    #[test]
+    fn chapter_index_matches_page_lookup_across_unordered_snapshots_and_duplicates() {
+        let mut tree = OutlineView::default();
+        let mut random = 91_u64;
+        for count in [0, 1, 17, 10_000, 0, 29] {
+            tree.set_entries(
+                (0..count)
+                    .map(|index| {
+                        random = random.wrapping_mul(6364136223846793005).wrapping_add(1);
+                        OutlineEntry {
+                            title: format!("Heading {index}"),
+                            depth: (random >> 32) as usize % 9,
+                            destination: (!random.is_multiple_of(3)).then(|| {
+                                crate::destination::Destination::page((random >> 16) as usize % 200)
+                            }),
+                        }
+                    })
+                    .collect(),
+            );
+            for page in 0..220 {
+                let expected = tree
+                    .entries
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, entry)| {
+                        entry
+                            .destination
+                            .filter(|destination| destination.page <= page)
+                            .map(|destination| (destination.page, index))
+                    })
+                    .max()
+                    .map(|(_, index)| index);
+                assert_eq!(
+                    tree.chapter_at(page),
+                    expected,
+                    "{count} entries, page {page}"
+                );
+            }
+        }
+        tree.set_entries(Vec::new());
+        assert_eq!(tree.chapter_at(usize::MAX), None);
+        assert_eq!(tree.chapter_starts.capacity(), 0);
+    }
+
     fn tree() -> OutlineView {
         let mut tree = OutlineView::default();
         tree.set_entries(
@@ -208,6 +472,59 @@ mod tests {
             .collect(),
         );
         tree
+    }
+
+    #[test]
+    fn prepared_outline_is_ready_for_unicode_filters_folds_and_navigation() {
+        let mut prepared = OutlineView::prepare(tree().entries, || false).unwrap();
+        assert_eq!(prepared.visible(), [0, 1, 2, 3, 4, 5]);
+        assert_eq!(prepared.selected(), Some(0));
+        assert!(prepared.query.is_empty() && prepared.motions.is_empty());
+        assert!(!prepared.focus && !prepared.confirm);
+        assert!(prepared.reveal);
+        prepared.toggle(1);
+        prepared.query = "STRASSE".into();
+        prepared.refilter();
+        assert_eq!(prepared.visible(), [0, 1, 2]);
+        assert_eq!(prepared.selected(), Some(2));
+        prepared.query.clear();
+        prepared.refilter();
+        assert_eq!(prepared.visible(), [0, 1, 3, 4, 5]);
+        assert_eq!(prepared.selected(), Some(1));
+        prepared.step(1);
+        assert_eq!(prepared.selected(), Some(3));
+    }
+
+    #[test]
+    fn outline_preparation_stops_before_start_during_titles_and_before_publication() {
+        assert!(OutlineView::prepare(Vec::new(), || true).is_none());
+        assert!(OutlineView::prepare(tree().entries, || true).is_none());
+        let entries: Vec<_> = (0..10_000)
+            .map(|index| OutlineEntry {
+                title: format!("Chapter {index} — Straße 中文"),
+                destination: None,
+                depth: index % 8,
+            })
+            .collect();
+        let mut checks = 0;
+        assert!(
+            OutlineView::prepare(entries, || {
+                checks += 1;
+                checks == 3
+            })
+            .is_none()
+        );
+        assert_eq!(checks, 3);
+        // Even empty outlines check again before their ready model is returned.
+        let mut checks = 0;
+        assert!(
+            OutlineView::prepare(Vec::new(), || {
+                checks += 1;
+                checks == 3
+            })
+            .is_none()
+        );
+        assert_eq!(checks, 3);
     }
 
     #[test]
@@ -249,6 +566,81 @@ mod tests {
         tree.set_entries(Vec::new());
         assert!(tree.is_empty());
         assert!(tree.query.is_empty());
+    }
+
+    #[test]
+    fn filtered_rows_match_ancestor_walks_across_queries_depths_and_snapshots() {
+        let mut tree = OutlineView::default();
+        let mut random = 31_u64;
+        for count in [1, 17, 130, 1000, 0, 29] {
+            tree.set_entries(
+                (0..count)
+                    .map(|index| {
+                        random = random.wrapping_mul(6364136223846793005).wrapping_add(1);
+                        OutlineEntry {
+                            title: format!(
+                                "Node {index} {} {}",
+                                if random & 1 == 0 {
+                                    "Straße"
+                                } else {
+                                    "chapter"
+                                },
+                                if random & 2 == 0 { "中文" } else { "ΟΣ" }
+                            ),
+                            depth: (random >> 32) as usize % 9,
+                            destination: None,
+                        }
+                    })
+                    .collect(),
+            );
+            tree.fold_all(true);
+            for query in [
+                "STRASSE",
+                "中文 chapter",
+                "σ",
+                "missing",
+                "node",
+                "chapter",
+                "strasse 中文",
+                "node 1",
+                "STRASSE",
+            ] {
+                let folded_query = caseless::default_case_fold_str(query);
+                let words: Vec<_> = folded_query.split_whitespace().collect();
+                let matched: Vec<_> = tree
+                    .entries
+                    .iter()
+                    .map(|entry| {
+                        let title = caseless::default_case_fold_str(&entry.title);
+                        words.iter().all(|word| title.contains(word))
+                    })
+                    .collect();
+                let selected = tree
+                    .selected
+                    .filter(|&index| matched[index])
+                    .or_else(|| matched.iter().position(|&matched| matched));
+                let mut retained = matched.clone();
+                for (index, &matched) in matched.iter().enumerate() {
+                    if matched {
+                        let mut parent = tree.parents[index];
+                        while let Some(index) = parent {
+                            retained[index] = true;
+                            parent = tree.parents[index];
+                        }
+                    }
+                }
+                let expected: Vec<_> = (0..count).filter(|&index| retained[index]).collect();
+                tree.query = query.into();
+                tree.refilter();
+                assert_eq!(tree.visible(), expected, "{count} nodes, {query}");
+                assert_eq!(tree.selected(), selected, "{count} nodes, {query}");
+                // Sometimes select context rather than a title match before
+                // changing the query, as keyboard navigation in the UI can.
+                if let Some(&index) = tree.visible().first() {
+                    tree.select(index);
+                }
+            }
+        }
     }
 
     #[test]

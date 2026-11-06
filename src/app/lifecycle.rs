@@ -52,6 +52,10 @@ impl Pagewing {
         self.suspend_plugins();
         self.synctex.clear_document();
         egui::Popup::close_all(context);
+        super::copy_menu::clear(context);
+        self.list_keyboard.begin_frame(context);
+        self.list_keyboard = super::list_keyboard::ListKeyboard::default();
+        self.removal_focus = super::removal_focus::RemovalFocus::default();
         self.id += 1;
         self.nav = Navigation::default();
         self.history = crate::history::ViewHistory::default();
@@ -69,7 +73,7 @@ impl Pagewing {
         self.bookmark_pages = Vec::new();
         self.labels = crate::page_labels::PageLabels::default();
         self.links.clear();
-        self.visible_links = crate::link_visibility::LinkVisibility::default();
+        self.visible_links = crate::visible_rects::VisibleRects::default();
         self.hints.cancel();
         self.selection.cancel();
         self.mark_action = None;
@@ -84,10 +88,12 @@ impl Pagewing {
         self.pending_focus = None;
         self.pending_destination = None;
         self.hits = Vec::new();
+        self.search_highlights.clear();
         self.result_text.clear();
         self.hit_index = None;
         self.reveal_hit = None;
-        self.pending_search_jump = None;
+        self.result_focus_origin = None;
+        self.search_navigation.clear();
         self.query = String::new();
         self.search_due = None;
         self.search_open = false;
@@ -96,6 +102,8 @@ impl Pagewing {
         self.scan_total = 0;
         self.search_complete = true;
         self.search_limited = false;
+        self.search_stopped = false;
+        self.search_run_requested = None;
         self.revision += 1;
         self.reading = ReadingState::default();
         self.overflow = Vec2::ZERO;
@@ -162,7 +170,7 @@ impl Pagewing {
         self.automatic_reload = false;
         self.remember();
         if let Some(message) = &mut self.message {
-            message.recovery = None;
+            message.cancel_recovery();
         }
         self.nav.clear_prefix();
         self.loading = true;
@@ -170,7 +178,7 @@ impl Pagewing {
         self.error = None;
         self.hints.cancel();
         self.selection.cancel();
-        self.pending_search_jump = None;
+        self.search_navigation.clear();
         if self.reloading {
             self.worker
                 .reload(self.id, self.reading.path.clone(), String::new());
@@ -355,7 +363,7 @@ mod tests {
                 dimensions: vec![[600.0, 800.0]; 2],
                 sync_geometry: Vec::new(),
                 info: Default::default(),
-                outline: Vec::new(),
+                outline: Box::default(),
                 labels: Default::default(),
             })
             .unwrap();

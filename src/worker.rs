@@ -15,6 +15,9 @@ use std::{
     time::Instant,
 };
 
+mod scheduling;
+mod search_updates;
+
 /// Recovery depends on whether one render failed or the whole session stopped.
 pub enum Failure {
     Open(LoadError),
@@ -40,7 +43,9 @@ pub enum Event {
         dimensions: Vec<[f32; 2]>,
         sync_geometry: Vec<crate::synctex::PageGeometry>,
         info: crate::document_info::DocumentInfo,
-        outline: Vec<crate::outline::OutlineEntry>,
+        // Titles and tree indexes are ready for display and filtering. Boxing
+        // keeps this large model out of every bounded-queue event slot.
+        outline: Box<crate::outline_view::OutlineView>,
         labels: crate::page_labels::PageLabels,
     },
     Rendered {
@@ -112,6 +117,7 @@ struct SearchProgress {
     hits: usize,
     cursor: text::SearchCursor,
     text: Option<Arc<PageText>>,
+    updates: search_updates::Updates,
 }
 
 impl SearchProgress {
@@ -123,6 +129,7 @@ impl SearchProgress {
             hits: 0,
             cursor: text::SearchCursor::default(),
             text: None,
+            updates: search_updates::Updates::new(Instant::now()),
         }
     }
 }
@@ -337,9 +344,12 @@ impl Worker {
                             return Ok(None);
                         }
                         let outline = crate::outline::read(&pdf);
-                        if cancelled() {
+                        let Some(outline) =
+                            crate::outline_view::OutlineView::prepare(outline, &cancelled)
+                        else {
                             return Ok(None);
-                        }
+                        };
+                        let outline = Box::new(outline);
                         let labels = crate::page_labels::PageLabels::read(&pdf);
                         if cancelled() {
                             return Ok(None);
@@ -553,6 +563,7 @@ fn session(
     let link_reader = crate::links::LinkReader::new(pdf);
     let mut texts = crate::text_cache::TextCache::default();
     let mut search: Option<SearchProgress> = None;
+    let mut background = scheduling::Background::default();
     loop {
         let job = {
             let (lock, wake) = &**shared;
@@ -596,11 +607,10 @@ fn session(
                 if std::mem::take(&mut pending.comments) {
                     break Job::Comments;
                 }
-                if let Some(progress) = &search {
-                    break Job::Search(progress.page);
-                }
-                if let Some(key) = pending.thumbnails.pop_front() {
-                    break Job::Thumbnail(key, pending.thumbnail_revision);
+                if let Some(job) =
+                    background.next(&mut pending, search.as_ref().map(|progress| progress.page))
+                {
+                    break job;
                 }
                 pending = wake
                     .wait_timeout(pending, watch.remaining(Instant::now()))
@@ -849,6 +859,7 @@ fn session(
                         &mut progress.cursor,
                         limit,
                     );
+                    background.searched();
                     texts.refresh(page, &text);
                     progress.hits += batch.hits.len();
                     if batch.complete {
@@ -860,19 +871,24 @@ fn session(
                         progress.text = Some(text);
                     }
                     let complete = progress.page >= pdf.pages().len() || progress.hits >= 10_000;
-                    emit(
-                        tx,
-                        context,
-                        Event::Search {
-                            id,
-                            revision: progress.request.revision,
-                            hits: batch.hits,
-                            scanned: progress.page,
-                            total: pdf.pages().len(),
-                            complete,
-                            limited: progress.hits >= 10_000,
-                        },
-                    );
+                    if progress
+                        .updates
+                        .publish(!batch.hits.is_empty(), complete, Instant::now())
+                    {
+                        emit(
+                            tx,
+                            context,
+                            Event::Search {
+                                id,
+                                revision: progress.request.revision,
+                                hits: batch.hits,
+                                scanned: progress.page,
+                                total: pdf.pages().len(),
+                                complete,
+                                limited: progress.hits >= 10_000,
+                            },
+                        );
+                    }
                     if complete {
                         search = None;
                     }
@@ -1187,7 +1203,7 @@ mod tests {
     }
 
     #[test]
-    fn page_rendering_and_search_finish_before_queued_thumbnails() {
+    fn page_rendering_and_short_search_finish_before_queued_thumbnails() {
         let worker = Worker::new(egui::Context::default());
         worker.open(1, sample(), String::new());
         assert!(matches!(receive(&worker), Event::Opened { .. }));
@@ -1211,7 +1227,7 @@ mod tests {
             match receive(&worker) {
                 Event::Search { complete: true, .. } => break,
                 Event::Search { .. } => {}
-                _ => panic!("Thumbnails must follow document search"),
+                _ => panic!("Thumbnails must follow a short document search"),
             }
         }
         assert!(matches!(
@@ -1421,6 +1437,69 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn long_search_and_previews_both_advance_without_delaying_interactive_jobs() {
+        let file = dense_sample(12000);
+        let worker = Worker::new(egui::Context::default());
+        worker.open(1, file.path().into(), String::new());
+        assert!(matches!(receive(&worker), Event::Opened { .. }));
+        let first = render_key(1);
+        let second = RenderKey {
+            rotation: 1,
+            ..first
+        };
+        worker.update(|pending| {
+            pending.replace_thumbnails(vec![first, second]);
+            pending.replace_renders(vec![first]);
+            pending.copy = Some(1);
+            pending.search = Some(SearchRequest {
+                revision: 9,
+                query: "dense".into(),
+                options: SearchOptions::default(),
+            });
+        });
+        assert!(matches!(receive(&worker), Event::Text { page: 1, .. }));
+        assert!(matches!(receive(&worker), Event::Rendered { key, .. } if key == first));
+        let (mut complete, mut previews, mut hits, mut batches) = (false, 0, 0, 0);
+        while !complete || previews < 2 {
+            match receive(&worker) {
+                Event::Search {
+                    revision: 9,
+                    hits: batch,
+                    complete: done,
+                    limited,
+                    ..
+                } => {
+                    hits += batch.len();
+                    batches += 1;
+                    if done {
+                        assert!(limited);
+                        complete = true;
+                    }
+                }
+                Event::Thumbnail {
+                    key,
+                    image: Some(_),
+                    ..
+                } => {
+                    assert!(!complete, "previews must not wait for the whole search");
+                    assert!(
+                        (1..=8).contains(&batches),
+                        "both tasks must advance: {batches} search batches"
+                    );
+                    assert_eq!(key, if previews == 0 { first } else { second });
+                    previews += 1;
+                    batches = 0;
+                }
+                _ => panic!("Unexpected worker event"),
+            }
+        }
+        assert_eq!(
+            hits, 10000,
+            "yielding must preserve every accepted search hit"
+        );
     }
 
     #[test]
@@ -1745,12 +1824,18 @@ mod tests {
             Event::Opened {
                 id,
                 dimensions,
-                outline,
+                mut outline,
                 ..
             } => {
                 assert_eq!(id, 2);
                 assert_eq!(dimensions.len(), 6);
-                assert_eq!(outline.len(), 6);
+                assert_eq!(outline.visible(), [0, 1, 2, 3, 4, 5]);
+                assert_eq!(outline.selected(), Some(0));
+                // Filtering is immediately usable without any UI preparation.
+                outline.query = outline.entry(1).title.to_uppercase();
+                outline.refilter();
+                assert!(outline.visible().contains(&1));
+                assert_eq!(outline.selected(), Some(1));
             }
             _ => panic!("Expected the second document to open"),
         }
@@ -1927,6 +2012,10 @@ mod tests {
         worker.open(12, path.clone(), String::new());
         assert!(matches!(receive(&worker), Event::Opened { id: 12, .. }));
         std::fs::write(&path, b"incomplete update").unwrap();
+        // File notifications are independent of explicit reloads. Consume each
+        // write's notification so a slow runner cannot leave it queued ahead
+        // of the reload result. This also exercises the watcher-triggered path.
+        assert!(matches!(receive(&worker), Event::FileChanged { id: 12 }));
         worker.reload(12, path.clone(), String::new());
         assert!(matches!(
             receive(&worker),
@@ -1956,6 +2045,7 @@ mod tests {
         }
         assert!(replacements > 0);
         std::fs::write(&path, bytes).unwrap();
+        assert!(matches!(receive(&worker), Event::FileChanged { id: 12 }));
         worker.reload(12, path, String::new());
         assert!(matches!(receive(&worker), Event::Opened { id: 12, .. }));
         worker.copy(0);

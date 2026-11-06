@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Check search-result visibility below long contents and bookmarks in X11."""
+"""Check search-result visibility and snippet copying in a native X11 window."""
 import ctypes
 import json
 import os
 from pathlib import Path
+import re
 import runpy
+import signal
 import subprocess
 import sys
 import tempfile
@@ -13,7 +15,8 @@ import time
 SCRIPTS = Path(__file__).resolve().parent
 desktop = runpy.run_path(str(SCRIPTS / "smoke-desktop.py"))
 Keyboard, wait_for = desktop["Keyboard"], desktop["wait_for"]
-ENTER, ESCAPE, TAB = 0xFF0D, 0xFF1B, 0xFF09
+ENTER, ESCAPE, TAB, F10 = 0xFF0D, 0xFF1B, 0xFF09, 0xFFC7
+HOME, END, UP, DOWN, PAGE_DOWN = 0xFF50, 0xFF57, 0xFF52, 0xFF54, 0xFF56
 
 
 def run(binary):
@@ -37,6 +40,7 @@ def run(binary):
         keyboard = Keyboard()
         keyboard.x11.XResizeWindow.argtypes = [ctypes.c_void_p, ctypes.c_ulong,
                                               ctypes.c_uint, ctypes.c_uint]
+        keyboard.x11.XSync.argtypes = [ctypes.c_void_p, ctypes.c_int]
         with open(root / "application.log", "w+") as log:
             application = subprocess.Popen([str(binary), str(document)], env=environment,
                                            stdout=log, stderr=log)
@@ -60,6 +64,25 @@ def run(binary):
                     keyboard.key(TAB)
                 keyboard.key(ENTER)
                 keyboard.key(ESCAPE)
+
+            def burst(keys):
+                application.send_signal(signal.SIGSTOP)
+                try:
+                    _, status = os.waitpid(application.pid, os.WUNTRACED)
+                    assert os.WIFSTOPPED(status)
+                    for symbol, modifiers in keys:
+                        keyboard.key(symbol, delay=0, **modifiers)
+                    keyboard.x11.XSync(keyboard.display, False)
+                finally:
+                    application.send_signal(signal.SIGCONT)
+                time.sleep(0.4)
+
+            def copied_page(minimum, maximum, description):
+                def ready():
+                    match = re.search(r"Needle (\d{3})", keyboard.clipboard())
+                    page = int(match.group(1)) if match else 0
+                    return page if minimum <= page <= maximum else None
+                return wait_for(ready, description)
 
             def selected_result(height):
                 # Highlight pixels identify search rows even while bookmarks,
@@ -88,7 +111,73 @@ def run(binary):
                 for width, height in ((1180, 820), (860, 240), (860, 540)):
                     resize(width, height)
                     wait_for(lambda: selected_result(height), "selected result retained after resizing")
+                keyboard.key("f", ctrl=True)
+                for _ in range(6):
+                    keyboard.key(TAB)
+                keyboard.key(ENTER)
+                exported = keyboard.clipboard()
+                for required in ("Pagewing search snippets\n", f"File: {document}\n", "Query: Needle\n",
+                                 "Available results: 80\n", "[Search complete.]", "Result 1 · Page 1",
+                                 "Result 80 · Page 80", "Needle 080", "PDF page label: i\n",
+                                 "PDF page label: A-76\n"):
+                    assert required in exported, (required, exported)
+                expect(79, "copying all results preserves the selected hit and reading page")
+                keyboard.key(ESCAPE)
                 position = selected_result(540)
+                keyboard.click(position, button=3)
+                keyboard.key(ENTER)
+                wait_for(lambda: "Needle 080" in keyboard.clipboard()
+                         and not keyboard.clipboard().startswith("Pagewing search snippets\n"),
+                         "single result snippet reaches the system clipboard")
+                snippet = keyboard.clipboard()
+                assert "Needle 079" not in snippet and "Query:" not in snippet, snippet
+                expect(79, "copying a snippet preserves the reading page")
+                position = wait_for(lambda: selected_result(540), "copying a snippet preserves the selected match")
+                keyboard.click(position, button=3)
+                keyboard.key(ESCAPE)
+                assert keyboard.clipboard() == snippet, "cancelling the menu changes the clipboard"
+                expect(79, "cancelling the snippet menu preserves navigation")
+
+                # Results focuses the selected match without traversing the
+                # long outline and bookmarks or changing the reading page.
+                keyboard.key("k", shift=True)
+                expect(78, "read a different page while retaining the selected match")
+                keyboard.key("f", ctrl=True)
+                keyboard.key("a", ctrl=True)
+                keyboard.key("c", ctrl=True)
+                assert keyboard.clipboard() == "Needle"
+                for _ in range(5):
+                    keyboard.key(TAB)
+                burst([(ENTER, {}), ("c", {"ctrl": True})])
+                assert keyboard.clipboard() == snippet, "Results must focus the selected row before queued copying"
+                expect(78, "focusing a result preserves the reading page")
+                # Copying belongs to focus, not the selected search match.
+                keyboard.key(TAB, shift=True)
+                keyboard.key("c", ctrl=True)
+                previous_snippet = keyboard.clipboard()
+                assert "Needle 079" in previous_snippet and "Needle 080" not in previous_snippet, previous_snippet
+                expect(78, "copying a focused neighboring snippet preserves navigation")
+                assert selected_result(540), "copying changes the selected search match"
+                keyboard.key(TAB)
+                burst([(F10, {"shift": True}), (ENTER, {})])
+                assert keyboard.clipboard() == snippet, "fast keyboard menu activation must copy the focused result"
+                expect(78, "keyboard menu activation preserves navigation")
+
+                burst([(TAB, {"shift": True}), (F10, {"shift": True})])
+                for width, height in ((860, 240), (1180, 820), (860, 540)):
+                    resize(width, height)
+                keyboard.key(ENTER)
+                assert keyboard.clipboard() == previous_snippet, "resizing must retain the keyboard snippet menu"
+                expect(78, "resized keyboard menu preserves navigation")
+                keyboard.key(TAB)
+                keyboard.key(F10, shift=True)
+                burst([(ESCAPE, {}), ("c", {"ctrl": True})])
+                assert keyboard.clipboard() == snippet, "Escape must restore row focus before a queued copy"
+                expect(78, "menu cancellation and restored-focus copying preserve navigation")
+                keyboard.key(ENTER)
+                expect(79, "Enter follows the focused result after Results and copying")
+                keyboard.key(ESCAPE)
+                position = wait_for(lambda: selected_result(540), "keyboard copying preserves the selected match")
                 keyboard.wheel(position, steps=12)
                 time.sleep(0.3)
                 assert not selected_result(540), "manual list scrolling must remain in place"
@@ -111,10 +200,41 @@ def run(binary):
                 position = wait_for(lambda: selected_result(540), "Results returns from focused contents")
                 keyboard.click(position)
                 expect(78, "Results preserves the current hit while reading another chapter")
+
+                keyboard.key("f", ctrl=True)
+                for _ in range(5):
+                    keyboard.key(TAB)
+                keyboard.key(ENTER)
+                burst([(HOME, {}), (DOWN, {}), ("c", {"ctrl": True})])
+                copied_page(2, 2, "queued copying uses the newly focused offscreen row")
+                expect(78, "browsing result focus preserves the reading page")
+                burst([(PAGE_DOWN, {}), ("c", {"ctrl": True})])
+                large_page = copied_page(3, 79, "PageDown copies a later result")
+                burst([(HOME, {}), (UP, {}), ("c", {"ctrl": True})])
+                copied_page(1, 1, "Up stops at the first result")
+                burst([(END, {}), (DOWN, {}), ("c", {"ctrl": True})])
+                copied_page(80, 80, "Down stops at the final result")
+                resize(860, 240)
+                burst([(HOME, {}), (PAGE_DOWN, {}), ("c", {"ctrl": True})])
+                copied_page(2, large_page - 1, "a smaller viewport pages by fewer results")
+                expect(78, "result paging in a short window preserves navigation")
+                resize(860, 540)
+                burst([(END, {}), (UP, {}), (F10, {"shift": True}), (ENTER, {})])
+                copied_page(79, 79, "the snippet menu belongs to the newly focused row")
+                expect(78, "opening a menu after result motion preserves the reading page")
+                burst([(HOME, {}), (DOWN, {}), (ENTER, {})])
+                expect(1, "Enter follows the focused result after queued first/next motion")
+                keyboard.key(ESCAPE)
+                keyboard.key(HOME)
+                expect(0, "Escape releases result focus and restores reader Home")
                 keyboard.key("q", ctrl=True)
                 assert application.wait(timeout=8) == 0
-                print("PASS: 80 search results below long contents and 60 bookmarks, first/last navigation, resize visibility, manual scrolling, Results restoration, clickable rows and chapter focus")
+                print("PASS: 80 search results below long contents and 60 bookmarks, full and individual snippet copying, queued focus motions/copy/menu/activation, viewport paging, first/last boundaries, reader-position preservation, resize, manual scrolling, Results restoration, clickable rows, chapter focus and Escape return to reader navigation")
             except Exception:
+                try:
+                    print(f"Clipboard at failure: {keyboard.clipboard()!r}", file=sys.stderr)
+                except Exception as diagnostic:
+                    print(f"Could not inspect clipboard: {diagnostic}", file=sys.stderr)
                 log.flush()
                 log.seek(0)
                 print(log.read(), file=sys.stderr)

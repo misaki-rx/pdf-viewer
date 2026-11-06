@@ -151,6 +151,14 @@ def run(binary):
                 expect(3, "Tab+Enter on Next selects exactly one later match")
                 keyboard.key(0xFF09); keyboard.key(" ")
                 wait_for(lambda: json.loads(config_path.read_text())["sidebar"], "keyboard Results button opens sidebar")
+                # Results now transfers focus into its list. Return to Find
+                # to continue checking the remaining search-bar controls.
+                keyboard.key("f", ctrl=True)
+                for _ in range(6):
+                    keyboard.key(0xFF09)
+                keyboard.key(" ")
+                assert keyboard.clipboard().startswith("Pagewing search snippets\n"), "keyboard Copy results exports the current matches"
+                keyboard.key(0xFF09)  # History menu.
                 keyboard.key(0xFF09); keyboard.key(" ")
                 keyboard.key("j", shift=True)
                 expect(4, "keyboard close button returns input to the reader")
@@ -181,7 +189,7 @@ def run(binary):
                             start = None
                     return spans
 
-                for label in ("Aa", "Word", "Prev", "Next", "Results", "Close"):
+                for label in ("Aa", "Word", "Prev", "Next", "Results", "Copy results", "History", "Close"):
                     keyboard.key(0xFF09)
                     spans = focused_span(240)
                     assert len(spans) == 1 and 3 < spans[0][0] < spans[0][1] < 237, (label, spans)
@@ -264,6 +272,15 @@ def run(binary):
                 assert json.loads(config_path.read_text())["recent"][0]["page"] == 0
                 print("PASS: saved keyboard/button preferences, Tab/Space/Enter on all search controls, actual focused-button visibility and click after 240x240 resize, manual scrolling, query focus and text preservation, actual search behavior across restarts, old-config defaults, case/whole-word combinations, focused shortcuts, rapid replacement, deferred Enter, wrap, reload, empty/no matches, compact buttons and clickable inline result highlights across light/dark themes and replacement queries")
             except Exception:
+                print(f"Reader process status: {application.poll()!r}", file=sys.stderr)
+                if application.poll() is None:
+                    try:
+                        keyboard.key("f", ctrl=True)
+                        keyboard.key("a", ctrl=True)
+                        keyboard.key("c", ctrl=True)
+                        print(f"Actual search query: {keyboard.clipboard()!r}", file=sys.stderr)
+                    except Exception as diagnostic:
+                        print(f"Could not inspect search query: {diagnostic}", file=sys.stderr)
                 log.flush(); log.seek(0)
                 print(log.read(), file=sys.stderr)
                 if config_path.exists():

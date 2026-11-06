@@ -1,8 +1,25 @@
 //! Cached comment navigation, independent of widget layout and PDF writing.
 use crate::annotations::{Comments, ReviewStatus};
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 
 const SEARCH_BYTES: usize = 8 * 1024 * 1024;
+
+struct Filtering {
+    filter: CommentFilter,
+    page: Option<usize>,
+    words: Vec<memchr::memmem::Finder<'static>>,
+    next: usize,
+    matches: usize,
+}
+
+impl Filtering {
+    fn matches(&self, filter: &CommentFilter, page: Option<usize>) -> bool {
+        self.filter == *filter && self.page == page
+    }
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CommentFilter {
@@ -25,11 +42,18 @@ pub struct CommentView {
     pub filter: CommentFilter,
     threads: Vec<(usize, usize)>,
     parents: Vec<Option<usize>>,
+    // Scratch tables are sized to the snapshot and reused across filters.
+    matched: Vec<bool>,
+    retained: Vec<bool>,
     visible: Vec<CommentRow>,
     overlays: HashMap<usize, Vec<usize>>,
-    folded: Vec<Option<[String; 2]>>,
+    // Fields are prepared separately so an author-only match skips the body.
+    folded: Vec<[Option<String>; 2]>,
     folded_bytes: usize,
+    // Reuse temporary storage for fields that exceed the search cache budget.
+    scratch: [String; 2],
     applied: Option<(CommentFilter, Option<usize>)>,
+    filtering: Option<Filtering>,
     matches: usize,
     selected: Option<usize>,
     pub reveal: bool,
@@ -51,9 +75,13 @@ impl CommentView {
                 self.overlays.entry(comment.page).or_default().push(index);
             }
         }
-        self.folded = (0..comments.items.len()).map(|_| None).collect();
+        self.folded = (0..comments.items.len()).map(|_| [None, None]).collect();
         self.folded_bytes = 0;
+        self.scratch = Default::default();
+        self.matched = vec![false; comments.items.len()];
+        self.retained = vec![false; comments.items.len()];
         self.applied = None;
+        self.filtering = None;
         self.visible.clear();
         self.matches = 0;
         self.selected = None;
@@ -62,6 +90,27 @@ impl CommentView {
 
     /// Refilter only when its inputs change, selecting the first direct match.
     pub fn update(&mut self, comments: &Comments, page: usize) -> bool {
+        self.advance(comments, page, None)
+    }
+
+    /// Yield between comments after approximately `budget` of filtering work.
+    /// A field fold and the final tree pass are indivisible, so this is a soft
+    /// budget rather than a maximum frame time. Empty queries stay immediate.
+    pub fn update_for(&mut self, comments: &Comments, page: usize, budget: Duration) -> bool {
+        if self.filter.query.trim().is_empty() {
+            self.update(comments, page)
+        } else {
+            self.advance(comments, page, Instant::now().checked_add(budget))
+        }
+    }
+
+    pub fn progress(&self) -> Option<(usize, usize)> {
+        self.filtering
+            .as_ref()
+            .map(|work| (work.next, self.matched.len()))
+    }
+
+    fn advance(&mut self, comments: &Comments, page: usize, deadline: Option<Instant>) -> bool {
         let page = self.filter.current_page.then_some(page);
         if self
             .applied
@@ -70,40 +119,109 @@ impl CommentView {
         {
             return false;
         }
-        let query = caseless::default_case_fold_str(&self.filter.query);
-        let words: Vec<_> = query.split_whitespace().collect();
-        let mut matched = vec![false; comments.items.len()];
-        for (index, comment) in comments.items.iter().enumerate() {
-            if page.is_some_and(|p| p != comment.page)
+        if !self
+            .filtering
+            .as_ref()
+            .is_some_and(|work| work.matches(&self.filter, page))
+        {
+            let query = crate::case_fold::fold(&self.filter.query);
+            // Own the prepared keywords so later UI frames reuse them.
+            let words = query
+                .split_whitespace()
+                .map(|word| memchr::memmem::Finder::new(word).into_owned())
+                .collect();
+            self.filtering = Some(Filtering {
+                filter: self.filter.clone(),
+                page,
+                words,
+                next: 0,
+                matches: 0,
+            });
+            self.matched.fill(false);
+            // Never expose rows or selection from a different query while a
+            // replacement is incomplete. The editor is independent of rows.
+            self.visible.clear();
+            self.selected = None;
+            self.matches = 0;
+            self.applied = None;
+            self.reveal = false;
+        }
+        let mut work = self.filtering.take().unwrap();
+        let words = &work.words;
+        let matched = &mut self.matched;
+        let mut checked = 0;
+        let mut bytes = 0;
+        if words.is_empty() {
+            // Status/page-only filters do not need resumable text scanning.
+            // Keep their small loop independent of cursor and clock bookkeeping.
+            for (matched, comment) in matched.iter_mut().zip(&comments.items) {
+                *matched = page.is_none_or(|p| p == comment.page)
+                    && self.filter.review.is_none_or(|r| r == comment.review)
+                    && (!self.filter.marked || comment.marked);
+            }
+            work.next = comments.items.len();
+            work.matches = matched.iter().filter(|&&m| m).count();
+        }
+        while work.next < comments.items.len() {
+            let index = work.next;
+            let comment = &comments.items[index];
+            matched[index] = if page.is_some_and(|p| p != comment.page)
                 || self.filter.review.is_some_and(|r| r != comment.review)
                 || (self.filter.marked && !comment.marked)
             {
-                continue;
-            }
-            matched[index] = if words.is_empty() {
-                true
-            } else if let Some(fields) = &self.folded[index] {
-                words
-                    .iter()
-                    .all(|word| fields.iter().any(|s| s.contains(word)))
+                false
+            } else if let [Some(author), Some(contents)] = &self.folded[index] {
+                words.iter().all(|word| {
+                    word.find(author.as_bytes()).is_some()
+                        || word.find(contents.as_bytes()).is_some()
+                })
             } else {
-                let fields = [
-                    caseless::default_case_fold_str(&comment.author),
-                    caseless::default_case_fold_str(&comment.contents),
-                ];
-                let found = words
+                let [author_cache, contents_cache] = &mut self.folded[index];
+                let [author_scratch, contents_scratch] = &mut self.scratch;
+                let author = folded_field(
+                    &comment.author,
+                    author_cache,
+                    author_scratch,
+                    &mut self.folded_bytes,
+                );
+                if words
                     .iter()
-                    .all(|word| fields.iter().any(|s| s.contains(word)));
-                let bytes = fields.iter().map(String::capacity).sum::<usize>();
-                if bytes <= SEARCH_BYTES - self.folded_bytes {
-                    self.folded_bytes += bytes;
-                    self.folded[index] = Some(fields);
+                    .all(|word| word.find(author.as_bytes()).is_some())
+                {
+                    true
+                } else {
+                    let contents = folded_field(
+                        &comment.contents,
+                        contents_cache,
+                        contents_scratch,
+                        &mut self.folded_bytes,
+                    );
+                    words.iter().all(|word| {
+                        word.find(author.as_bytes()).is_some()
+                            || word.find(contents.as_bytes()).is_some()
+                    })
                 }
-                found
             };
+            work.matches += usize::from(matched[index]);
+            work.next += 1;
+            if let Some(deadline) = deadline {
+                checked += 1;
+                bytes += comment.author.len() + comment.contents.len();
+                // Avoid a clock call per short, cached comment while checking
+                // after each large field, including cache misses.
+                if checked >= 64 || bytes >= 32 * 1024 {
+                    checked = 0;
+                    bytes = 0;
+                    if work.next < comments.items.len() && Instant::now() >= deadline {
+                        self.filtering = Some(work);
+                        return false;
+                    }
+                }
+            }
         }
-        self.matches = matched.iter().filter(|&&m| m).count();
-        let mut keep = matched.clone();
+        self.matches = work.matches;
+        self.retained.copy_from_slice(matched);
+        let keep = &mut self.retained;
         // The preorder is already cycle-safe; one reverse pass retains every
         // ancestor even for very deep threads, without walking each chain.
         for (row, &(index, _)) in self.threads.iter().enumerate().rev() {
@@ -122,7 +240,7 @@ impl CommentView {
                     matched: matched[index],
                 })
             }));
-        self.applied = Some((self.filter.clone(), page));
+        self.applied = Some((work.filter, page));
         self.selected = self.visible.iter().position(|row| row.matched);
         self.reveal = true;
         true
@@ -170,212 +288,31 @@ impl CommentView {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::annotations::{Comment, CommentId};
-
-    fn comment(page: usize, slot: usize, parent: Option<CommentId>, text: &str) -> Comment {
-        Comment {
-            page,
-            slot: Some(slot),
-            parent,
-            review: ReviewStatus::None,
-            marked: false,
-            states: Vec::new(),
-            kind: "Highlight".into(),
-            contents: text.into(),
-            author: "Reviewer".into(),
-            rects: vec![hayro::kurbo::Rect::new(10., 10., 30., 20.)],
-            has_appearance: false,
-            truncated: false,
-            locked: false,
+fn folded_field<'a>(
+    text: &str,
+    cached: &'a mut Option<String>,
+    scratch: &'a mut String,
+    bytes: &mut usize,
+) -> &'a str {
+    if cached.is_none() {
+        crate::case_fold::fold_into(text, scratch);
+        let remaining = SEARCH_BYTES - *bytes;
+        if scratch.capacity() <= remaining {
+            *bytes += scratch.capacity();
+            *cached = Some(std::mem::take(scratch));
+        } else if scratch.len() <= remaining {
+            // A previous oversized field may have left a large scratch buffer.
+            // Keep that buffer for reuse without denying a smaller field cache.
+            let field = scratch.clone();
+            if field.capacity() <= remaining {
+                *bytes += field.capacity();
+                *cached = Some(field);
+            }
         }
     }
-
-    #[test]
-    fn combined_unicode_filters_retain_ancestors_but_not_unmatched_siblings() {
-        // Replies arrive out of thread order and may live on another page.
-        let root = comment(0, 0, None, "Original question");
-        let reply = comment(1, 0, root.id(), "Straße Σ 中文");
-        let mut nested = comment(1, 1, reply.id(), "STRASSE ς 中文");
-        nested.author = "审阅者".into();
-        nested.review = ReviewStatus::Completed;
-        nested.marked = true;
-        let sibling = comment(0, 1, root.id(), "Unrelated reply");
-        let comments = Comments {
-            items: vec![nested, root, sibling, reply],
-            limited: false,
-        };
-        let mut view = CommentView::default();
-        view.set_comments(&comments);
-        view.filter = CommentFilter {
-            query: " strasse σ 审阅者 中文 ".into(),
-            current_page: true,
-            review: Some(ReviewStatus::Completed),
-            marked: true,
-        };
-        assert!(view.update(&comments, 1));
-        assert_eq!(view.matches(), 1);
-        assert_eq!(
-            view.selected(),
-            Some(0),
-            "select the matching reply, not its context"
-        );
-        assert_eq!(view.selected_row(), Some(2));
-        assert_eq!(
-            view.rows(),
-            [
-                CommentRow {
-                    index: 1,
-                    depth: 0,
-                    matched: false
-                },
-                CommentRow {
-                    index: 3,
-                    depth: 1,
-                    matched: false
-                },
-                CommentRow {
-                    index: 0,
-                    depth: 2,
-                    matched: true
-                },
-            ]
-        );
-        assert!(
-            !view.update(&comments, 1),
-            "unchanged draws reuse their rows"
-        );
-        assert_eq!(view.overlays(0), [1], "filters do not remove PDF overlays");
-        assert!(
-            view.overlays(1).is_empty(),
-            "replies do not duplicate overlays"
-        );
-        assert!(view.update(&comments, 0));
-        assert!(view.rows().is_empty());
-        view.filter = CommentFilter::default();
-        assert!(view.update(&comments, 0));
-        assert_eq!(view.matches(), 4);
-        assert!(
-            !view.update(&comments, 99),
-            "all-pages filter ignores navigation"
-        );
-    }
-
-    #[test]
-    fn deep_threads_cycles_and_missing_parents_remain_stack_safe_and_unique() {
-        let mut items = Vec::new();
-        for slot in 0..10_000 {
-            let parent = (slot > 0).then(|| CommentId {
-                page: 0,
-                slot: slot - 1,
-            });
-            items.push(comment(
-                0,
-                slot,
-                parent,
-                if slot == 9_999 { "needle" } else { "ancestor" },
-            ));
-        }
-        let mut comments = Comments {
-            items,
-            limited: false,
-        };
-        let mut view = CommentView::default();
-        view.set_comments(&comments);
-        view.filter.query = "needle".into();
-        view.update(&comments, 0);
-        assert_eq!(view.matches(), 1);
-        assert_eq!(view.rows().len(), 10_000);
-        assert_eq!(view.rows().last().unwrap().depth, 9_999);
-        assert_eq!(
-            view.selected_row(),
-            Some(9_999),
-            "reveal the match at the end of a deep thread"
-        );
-        comments.items[0].parent = comments.items[9_999].id();
-        view.set_comments(&comments);
-        view.update(&comments, 0);
-        assert_eq!(view.rows().len(), 10_000);
-        comments.items[0].parent = Some(CommentId { page: 99, slot: 0 });
-        view.set_comments(&comments);
-        view.update(&comments, 0);
-        assert_eq!(view.rows().len(), 10_000);
-    }
-
-    #[test]
-    fn replacing_comments_invalidates_search_and_page_indices_and_keeps_filter() {
-        let mut comments = Comments {
-            items: vec![comment(3, 0, None, "needle")],
-            limited: false,
-        };
-        let mut view = CommentView::default();
-        view.set_comments(&comments);
-        view.filter.query = "needle".into();
-        view.update(&comments, 0);
-        assert_eq!(view.matches(), 1);
-        comments.items[0].contents = "Changed externally".into();
-        comments.items[0].page = 4;
-        view.set_comments(&comments);
-        view.update(&comments, 0);
-        assert_eq!(view.matches(), 0);
-        assert!(view.overlays(3).is_empty());
-        assert_eq!(view.overlays(4), [0]);
-        comments.items.clear();
-        view.set_comments(&comments);
-        view.update(&comments, 0);
-        assert!(view.rows().is_empty());
-        assert!(view.overlays(4).is_empty());
-    }
-
-    #[test]
-    fn search_cache_budget_never_truncates_matching() {
-        let contents = format!("{}needle", "a".repeat(SEARCH_BYTES + 1));
-        let comments = Comments {
-            items: vec![comment(0, 0, None, &contents)],
-            limited: false,
-        };
-        let mut view = CommentView::default();
-        view.set_comments(&comments);
-        for query in ["needle", "reviewer needle", "missing"] {
-            view.filter.query = query.into();
-            view.update(&comments, 0);
-            assert_eq!(view.matches(), usize::from(query != "missing"));
-            assert!(view.folded_bytes <= SEARCH_BYTES);
-            assert!(view.folded[0].is_none());
-        }
-    }
-
-    #[test]
-    fn keyboard_selection_clamps_each_motion_and_refilter_resets_it() {
-        let comments = Comments {
-            items: (0..3)
-                .map(|slot| comment(0, slot, None, &format!("Comment {slot}")))
-                .collect(),
-            limited: false,
-        };
-        let mut view = CommentView::default();
-        view.set_comments(&comments);
-        view.update(&comments, 0);
-        view.step(isize::MIN);
-        view.step(1);
-        assert_eq!(
-            view.selected(),
-            Some(1),
-            "up at the start must not cancel the following down"
-        );
-        view.step(isize::MAX);
-        assert_eq!(view.selected(), Some(2));
-        view.select(0);
-        assert_eq!(view.selected_row(), Some(0));
-        view.filter.query = "missing".into();
-        view.update(&comments, 0);
-        view.step(1);
-        assert_eq!(view.selected(), None);
-        view.filter.query = "2".into();
-        view.update(&comments, 0);
-        assert_eq!(view.selected(), Some(2));
-        assert_eq!(view.selected_row(), Some(0));
-    }
+    cached.as_deref().unwrap_or(scratch)
 }
+
+#[cfg(test)]
+#[path = "comment_view/tests.rs"]
+mod tests;

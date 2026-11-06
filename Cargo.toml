@@ -109,6 +109,14 @@ name = "outline_filter"
 harness = false
 
 [[bench]]
+name = "case_folding"
+harness = false
+
+[[bench]]
+name = "continuous_layout"
+harness = false
+
+[[bench]]
 name = "link_reading"
 harness = false
 
@@ -145,6 +153,10 @@ name = "page_label_text"
 harness = false
 
 [[bench]]
+name = "label_lookup"
+harness = false
+
+[[bench]]
 name = "status_text"
 harness = false
 
@@ -157,7 +169,15 @@ name = "lazy_tooltips"
 harness = false
 
 [[bench]]
+name = "notice_panels"
+harness = false
+
+[[bench]]
 name = "search_selection"
+harness = false
+
+[[bench]]
+name = "search_highlights"
 harness = false
 
 [[bench]]
@@ -170,4 +190,28 @@ harness = false
 
 [[bench]]
 name = "annotation_geometry"
+harness = false
+
+[[bench]]
+name = "input_actions"
+harness = false
+
+[[bench]]
+name = "clipboard_exports"
+harness = false
+
+[[bench]]
+name = "search_word_misses"
+harness = false
+
+[[bench]]
+name = "word_boundaries"
+harness = false
+
+[[bench]]
+name = "search_map_suffix"
+harness = false
+
+[[bench]]
+name = "search_index_ascii"
 harness = false

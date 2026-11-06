@@ -4,8 +4,13 @@ use crate::comment_cards::CardTextCache;
 use crate::comment_view::{CommentFilter, CommentView};
 use eframe::egui::{self, Color32, Vec2};
 
+mod body;
 mod editor;
+mod export;
+mod filtering;
+mod input;
 mod list;
+mod menus;
 
 // Match the inputs accepted by the multiline editor. This is deliberately
 // conservative for edits such as undo or Delete that may leave text unchanged:
@@ -47,6 +52,8 @@ pub(super) struct CommentUi {
     pub comments: Comments,
     pub view: CommentView,
     cards: CardTextCache,
+    visible: crate::visible_rects::VisibleRects<(usize, usize), false>,
+    other_visible: crate::visible_rects::VisibleRects<(usize, usize), false>,
     pub editor: Option<Comment>,
     original: String,
     original_review: ReviewStatus,
@@ -59,14 +66,27 @@ pub(super) struct CommentUi {
     input_pass: Option<u64>,
     pub filter_motions: Vec<crate::list_navigation::Motion>,
     pub filter_confirm: bool,
+    filter_navigation: Option<filtering::FilterNavigation>,
+    pub(super) filter_input: std::collections::VecDeque<egui::Event>,
+    region: Option<(egui::LayerId, egui::Rect)>,
 }
 
 impl CommentUi {
     pub fn set_comments(&mut self, comments: Comments) {
+        if self.loaded {
+            self.clear_filter_navigation();
+            self.filter_input = Default::default();
+        }
         self.view.set_comments(&comments);
         self.cards.clear();
+        self.visible = Default::default();
+        self.clear_multi_page_overlays();
         self.comments = comments;
         self.loaded = true;
+    }
+
+    pub(super) fn clear_multi_page_overlays(&mut self) {
+        self.other_visible = Default::default();
     }
 
     pub fn reset(&mut self, reloaded: bool) {
@@ -97,6 +117,29 @@ impl CommentUi {
 }
 
 impl Pagewing {
+    pub(super) fn comment_control_focused(&self, context: &egui::Context) -> bool {
+        self.comments.open && shortcuts::focused_in_region(context, self.comments.region)
+    }
+
+    fn copy_shown_comments(&mut self, context: &egui::Context) {
+        let report = export::render(&self.comments.comments, self.comments.view.rows(), |page| {
+            self.labels.label(page)
+        });
+        if report.copied == 0 {
+            self.notify("No comments copied.");
+            return;
+        }
+        context.copy_text(report.text);
+        self.notify(if report.copied == report.total {
+            format!("Copied {} shown comments", report.copied)
+        } else {
+            format!(
+                "Copied {} of {} shown comments (clipboard size limit)",
+                report.copied, report.total
+            )
+        });
+    }
+
     pub(super) fn comment_filter_focused(&self, context: &egui::Context) -> bool {
         self.comments.open
             && self.zoom_input.is_none()
@@ -112,8 +155,8 @@ impl Pagewing {
     pub(super) fn set_comments_open(&mut self, context: &egui::Context, open: bool) {
         self.comments.open = open;
         if !open {
-            self.comments.filter_motions.clear();
-            self.comments.filter_confirm = false;
+            self.comments.clear_filter_navigation();
+            self.comments.filter_input = Default::default();
         }
         // Consume final text before hiding the panel, just as for a queued save.
         let pending = self.pending_comment_input(context);
@@ -138,7 +181,7 @@ impl Pagewing {
         .then(|| context.cumulative_pass_nr());
     }
 
-    fn pending_comment_input(&self, context: &egui::Context) -> bool {
+    pub(super) fn pending_comment_input(&self, context: &egui::Context) -> bool {
         self.comments.input_pass == Some(context.cumulative_pass_nr())
             && context.input(|input| input.events.iter().any(edits_comment))
     }
@@ -272,6 +315,10 @@ impl Pagewing {
 
     pub(super) fn comments_sidebar(&mut self, context: &egui::Context) {
         self.input_buttons.close_comments = None;
+        self.input_buttons.comment_filter_menu = None;
+        self.input_buttons.comment_status_menu = None;
+        self.input_buttons.comment_actions_menu = None;
+        self.comments.region = None;
         let save_requested = self.comments.save_requested;
         if (!self.comments.open && !save_requested && !self.pending_comment_input(context))
             || self.nav.count == 0
@@ -279,9 +326,10 @@ impl Pagewing {
             return;
         }
         let mut selected = None;
+        let mut copy = false;
         let mut actions = CommentActions::default();
         let maximum = (context.available_rect().width() - 120.0).clamp(100.0, 480.0);
-        egui::SidePanel::right("pagewing-comments-sidebar")
+        let panel = egui::SidePanel::right("pagewing-comments-sidebar")
             .frame(super::appearance::panel(context, 14))
             .default_width(320.0_f32.min(maximum))
             .width_range(220.0_f32.min(maximum)..=maximum)
@@ -291,7 +339,10 @@ impl Pagewing {
                     if ui.available_width() < 220.0 {
                         ui.spacing_mut().item_spacing.x = 4.0;
                         if ui.available_width() < 120.0 {
-                            ui.label(egui::RichText::new("Comments").small().strong());
+                            // Keep the title and both header actions on one
+                            // line so the editor footer retains its height.
+                            ui.spacing_mut().button_padding.x = 2.0;
+                            ui.label(egui::RichText::new("Notes").small().strong());
                         } else {
                             ui.strong("Comments");
                         }
@@ -309,6 +360,17 @@ impl Pagewing {
                             })
                             .id,
                     );
+                    copy = ui
+                        .add_enabled(
+                            self.comments.loaded
+                                && !self.loading
+                                && !self.comments.busy()
+                                && self.comments.view.progress().is_none()
+                                && !self.comments.view.rows().is_empty(),
+                            egui::Button::new("Copy").small(),
+                        )
+                        .on_hover_text("Copy saved comments shown in this list, including thread context. Unsaved editor changes are not included.")
+                        .clicked();
                 });
                 if self.comments.editor.is_some() {
                     let compact = ui.available_width() < 220.0 || ui.available_height() < 220.0;
@@ -332,6 +394,7 @@ impl Pagewing {
                 egui::ScrollArea::vertical()
                     .id_salt("pagewing-comments-panel")
                     .min_scrolled_height(0.0)
+                    .animated(false)
                     .max_height(panel_height.max(0.0))
                     .show(ui, |ui| {
                         let content_top = ui.cursor().top();
@@ -358,10 +421,15 @@ impl Pagewing {
                                 "Showing a limited number of annotations.",
                             );
                         }
-                        self.comments
-                            .view
-                            .update(&self.comments.comments, self.nav.page);
-                        if self.comments.loaded
+                        let focused = self.comment_filter_focused(context);
+                        self.comments.advance_filter(self.nav.page, focused, std::time::Duration::from_millis(4));
+                        if let Some((scanned, total)) = self.comments.view.progress() {
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.weak(format!("Filtering comments… {scanned}/{total}"));
+                            });
+                            context.request_repaint();
+                        } else if self.comments.loaded
                             && self.comments.view.filter != CommentFilter::default()
                         {
                             ui.weak(format!(
@@ -384,22 +452,38 @@ impl Pagewing {
                         } else {
                             remaining
                         };
-                        selected = self.comment_list(ui, list_height);
+                        selected = ui.scope_builder(
+                            egui::UiBuilder::new().id(("comment-list", self.id)),
+                            |ui| self.comment_list(ui, list_height),
+                        ).inner;
                         let confirm = !ui.is_sizing_pass()
                             && std::mem::take(&mut self.comments.filter_confirm)
                             && self.comment_filter_focused(context);
                         if confirm && !self.loading && !self.comments.busy() {
                             selected = self.comments.view.selected();
                         }
-                        if self.comment_editor_fields(ui) {
+                        let editor_height = panel_height - (ui.cursor().top() - content_top);
+                        if self.comment_editor_fields(ui, editor_height) {
                             context.request_repaint();
                         }
                         // InputState retains text events after TextEdit handles
                         // them. Later actions must inspect the actual draft.
                         self.comments.input_pass = None;
+                        // The body coordinates its caret across both scroll
+                        // areas. Revealing the entire text widget here would
+                        // displace the active card after a resize.
+                        if !context.memory(|memory| {
+                            memory.has_focus(egui::Id::new("pagewing-comment-input"))
+                        }) {
+                            shortcuts::reveal_focused_control(ui, ui.clip_rect().size());
+                        }
                     });
             });
+        self.comments.region = Some((panel.response.layer_id, panel.response.rect));
         let save_requested = std::mem::take(&mut self.comments.save_requested);
+        if copy && self.comments.view.progress().is_none() {
+            self.copy_shown_comments(context);
+        }
         if actions.discard {
             self.comments.editor = None;
         }
@@ -428,45 +512,68 @@ impl Pagewing {
         page_rect: egui::Rect,
         dimensions: [f32; 2],
     ) {
+        let view = crate::visible_rects::PageView {
+            document: self.id,
+            page,
+            page_rect,
+            clip: ui.clip_rect(),
+            dimensions,
+            rotation: self.reading.rotation,
+            scale: self.scale,
+        };
+        let visible = if page == self.nav.page {
+            &mut self.comments.visible
+        } else {
+            // Keep one neighbor only. A different page or view rebuilds this
+            // storage; consecutive draws of the same neighbor can reuse it.
+            // set_comments releases both buffers when the snapshot changes.
+            &mut self.comments.other_visible
+        };
+        let comments = &self.comments.comments.items;
+        visible.update_keyed(
+            view,
+            self.comments.view.overlays(page).iter().flat_map(|&index| {
+                comments[index]
+                    .rects
+                    .iter()
+                    .enumerate()
+                    .map(move |(part, &rect)| ((index, part), rect))
+            }),
+        );
         let mut selected = None;
-        for &index in self.comments.view.overlays(page) {
-            let comment = &self.comments.comments.items[index];
-            for (part, rect) in comment.rects.iter().enumerate() {
-                let rect = self
-                    .link_rect(*rect, page_rect, dimensions)
-                    .intersect(page_rect);
-                if !rect.is_positive() || !ui.clip_rect().intersects(rect) {
-                    continue;
-                }
-                if !comment.has_appearance {
-                    if comment.kind == "Highlight" {
-                        ui.painter().rect_filled(
-                            rect,
-                            0.0,
-                            Color32::from_rgba_unmultiplied(255, 210, 0, 75),
-                        );
-                    } else {
-                        ui.painter().circle_filled(
-                            rect.left_top() + Vec2::splat(4.0),
-                            4.0,
-                            Color32::from_rgb(215, 145, 30),
-                        );
-                    }
-                }
-                if !self.selection.active {
-                    let response = ui.interact(
+        for (&(index, part), &rect) in visible.indices.iter().zip(&visible.rects) {
+            if !rect.is_positive() || !view.clip.intersects(rect) {
+                continue;
+            }
+            let comment = &comments[index];
+            if !comment.has_appearance {
+                if comment.kind == "Highlight" {
+                    ui.painter().rect_filled(
                         rect,
-                        ui.id().with(("pdf-comment", page, index, part)),
-                        egui::Sense::click(),
+                        0.0,
+                        Color32::from_rgba_unmultiplied(255, 210, 0, 75),
                     );
-                    let response = response.on_hover_text(if comment.contents.is_empty() {
-                        "Click to add a comment"
-                    } else {
-                        &comment.contents
-                    });
-                    if response.clicked() {
-                        selected = Some(index);
-                    }
+                } else {
+                    ui.painter().circle_filled(
+                        rect.left_top() + Vec2::splat(4.0),
+                        4.0,
+                        Color32::from_rgb(215, 145, 30),
+                    );
+                }
+            }
+            if !self.selection.active {
+                let response = ui.interact(
+                    rect,
+                    ui.id().with(("pdf-comment", page, index, part)),
+                    egui::Sense::click(),
+                );
+                let response = response.on_hover_text(if comment.contents.is_empty() {
+                    "Click to add a comment"
+                } else {
+                    &comment.contents
+                });
+                if response.clicked() {
+                    selected = Some(index);
                 }
             }
         }

@@ -9,8 +9,10 @@ use std::time::Duration;
 
 impl Pagewing {
     pub(super) fn clear_multi_page_buffers(&mut self) {
+        self.comments.clear_multi_page_overlays();
+        self.search_highlights.clear_other();
         self.continuous_geometry = crate::page_geometry::PageGeometry::default();
-        self.other_visible_links = crate::link_visibility::LinkVisibility::default();
+        self.other_visible_links = crate::visible_rects::VisibleRects::default();
     }
 
     fn continuous_view(&self, pixels_per_point: f32) -> RenderView {
@@ -44,7 +46,7 @@ impl Pagewing {
             self.visible_links.clear();
             self.hints.cancel();
             self.requested = None;
-            self.pending_search_jump = None;
+            self.search_navigation.clear();
         }
         self.pan.y = offset;
         self.resolve_view();
@@ -101,7 +103,7 @@ impl Pagewing {
 
     pub(super) fn continuous_canvas(&mut self, ui: &mut egui::Ui) {
         let rect = ui.max_rect().shrink(24.0);
-        self.viewport = rect.size().max(Vec2::splat(1.0));
+        self.resize_viewport(rect.size().max(Vec2::splat(1.0)));
         if self.resolve_view().is_none() {
             return;
         }

@@ -1,4 +1,4 @@
-use super::{Pagewing, dialog, shortcuts};
+use super::{Pagewing, appearance, dialog, shortcuts};
 use eframe::egui::{
     self,
     text::{CCursor, CCursorRange},
@@ -38,7 +38,7 @@ impl Pagewing {
         self.page_input = None;
         self.recent_picker = None;
         self.search_focus = false;
-        self.pending_search_jump = None;
+        self.search_navigation.clear();
         self.comments.focus = false;
         let value = (self.scale * 100.0).to_string();
         let mut state = egui::text_edit::TextEditState::default();
@@ -104,15 +104,25 @@ impl Pagewing {
                 }
                 ui.horizontal_wrapped(|ui| {
                     for percent in [50, 100, 150, 200] {
-                        if ui.button(format!("{percent}%")).clicked() {
+                        if appearance::action_button(
+                            ui,
+                            ("zoom-preset", percent),
+                            egui::Button::new(format!("{percent}%")),
+                        )
+                        .clicked()
+                        {
                             chosen = Some(percent as f32 / 100.0);
                         }
                     }
                 });
                 ui.separator();
                 ui.horizontal(|ui| {
-                    let apply = ui.button("Apply").clicked();
-                    cancel = ui.button("Cancel").clicked();
+                    let apply =
+                        appearance::action_button(ui, "zoom-apply", egui::Button::new("Apply"))
+                            .clicked();
+                    cancel =
+                        appearance::action_button(ui, "zoom-cancel", egui::Button::new("Cancel"))
+                            .clicked();
                     if !ui.is_sizing_pass() && (apply || std::mem::take(&mut input.confirm)) {
                         chosen = parse_percentage(&input.value);
                         if chosen.is_none() {
@@ -143,12 +153,16 @@ mod tests {
     use crate::navigation::{Fit, Navigation};
     use egui::{Context, Event, Key, Modifiers, Pos2, RawInput, Rect, Vec2};
 
-    fn frame(app: &mut Pagewing, context: &Context, mut events: Vec<Event>) {
+    fn frame(app: &mut Pagewing, context: &Context, events: Vec<Event>) {
+        frame_at(app, context, Vec2::new(1100.0, 820.0), events);
+    }
+
+    fn frame_at(app: &mut Pagewing, context: &Context, size: Vec2, mut events: Vec<Event>) {
         let mut deferred = std::mem::take(&mut app.deferred_input);
         deferred.append(&mut events);
         let _ = context.run(
             RawInput {
-                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1100.0, 820.0))),
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
                 events: deferred,
                 ..Default::default()
             },
@@ -439,6 +453,159 @@ mod tests {
         app.clear_document(&context);
         assert!(app.zoom_input.is_none());
         assert!(!context.memory(|memory| memory.has_focus(input_id())));
+    }
+
+    #[test]
+    fn zoom_actions_keep_focus_and_activation_when_the_window_changes_size() {
+        let directory = tempfile::tempdir().unwrap();
+        for activation in [Key::Enter, Key::Space] {
+            for (index, expected) in [0.5, 1.0, 1.5, 2.0, 1.75, 1.25].into_iter().enumerate() {
+                let (mut app, context) = reader(directory.path().join("library.json"));
+                app.zoom_to(1.25);
+                settle(&mut app, &context);
+                app.open_zoom(&context);
+                app.zoom_input.as_mut().unwrap().value = "175".into();
+                settle(&mut app, &context);
+                for _ in 0..=index {
+                    frame(&mut app, &context, key(Key::Tab));
+                }
+                let focused = context.memory(|memory| memory.focused()).unwrap();
+                for size in dialog::TEST_SIZES {
+                    for _ in 0..4 {
+                        frame_at(&mut app, &context, size, Vec::new());
+                    }
+                    assert_eq!(
+                        context.memory(|memory| memory.focused()),
+                        Some(focused),
+                        "action {index}, {size:?}"
+                    );
+                }
+                frame(&mut app, &context, key(activation));
+                assert!(app.zoom_input.is_none(), "action {index}, {activation:?}");
+                assert_eq!(app.reading.fit, Fit::Custom(expected));
+                assert_eq!(app.nav.page, 1);
+            }
+        }
+    }
+
+    fn native_frame(app: &mut Pagewing, context: &Context, events: Vec<Event>) {
+        native_frame_at(app, context, Vec2::new(1100.0, 820.0), events);
+    }
+
+    fn native_frame_at(app: &mut Pagewing, context: &Context, size: Vec2, events: Vec<Event>) {
+        let mut input = RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
+            events,
+            ..Default::default()
+        };
+        eframe::App::raw_input_hook(app, context, &mut input);
+        let _ = context.run(input, |context| {
+            if !app.deferred_input.is_empty() {
+                let mut events = std::mem::take(&mut app.deferred_input);
+                context.input_mut(|input| {
+                    events.append(&mut input.events);
+                    input.events = events;
+                });
+            }
+            app.keys(context);
+            app.toolbar(context);
+            app.status(context);
+            app.zoom_dialog(context);
+            app.canvas(context);
+        });
+    }
+
+    #[test]
+    fn five_tab_presses_in_one_native_batch_reach_apply_before_enter() {
+        let directory = tempfile::tempdir().unwrap();
+        let (mut app, context) = reader(directory.path().join("library.json"));
+        app.open_zoom(&context);
+        app.zoom_input.as_mut().unwrap().value = "175".into();
+        settle(&mut app, &context);
+        let tabs = (0..5).flat_map(|_| key(Key::Tab)).collect();
+        native_frame(&mut app, &context, tabs);
+        for _ in 0..10 {
+            native_frame(&mut app, &context, Vec::new());
+        }
+        assert!(
+            app.zoom_input.is_some(),
+            "Tab navigation must not activate a control"
+        );
+        native_frame(&mut app, &context, key(Key::Enter));
+        assert!(app.zoom_input.is_none());
+        assert_eq!(app.reading.fit, Fit::Custom(1.75));
+    }
+
+    #[test]
+    fn opening_text_tabs_and_activation_keep_order_across_sizing_passes() {
+        let directory = tempfile::tempdir().unwrap();
+        for activation in [Key::Enter, Key::Space] {
+            let (mut app, context) = reader(directory.path().join("library.json"));
+            let mut events = zoom_shortcut();
+            events.push(Event::Paste("175".into()));
+            events.extend((0..5).flat_map(|_| key(Key::Tab)));
+            events.extend(key(activation));
+            native_frame(&mut app, &context, events);
+            assert!(
+                app.zoom_input.is_some(),
+                "activation must wait for the queued tabs"
+            );
+            for _ in 0..16 {
+                native_frame(&mut app, &context, Vec::new());
+            }
+            assert!(app.zoom_input.is_none());
+            assert_eq!(app.reading.fit, Fit::Custom(1.75));
+        }
+    }
+
+    #[test]
+    fn new_native_input_follows_queued_tabs_including_reverse_navigation() {
+        let directory = tempfile::tempdir().unwrap();
+        let (mut app, context) = reader(directory.path().join("library.json"));
+        app.open_zoom(&context);
+        app.zoom_input.as_mut().unwrap().value = "175".into();
+        settle(&mut app, &context);
+        native_frame(
+            &mut app,
+            &context,
+            (0..5).flat_map(|_| key(Key::Tab)).collect(),
+        );
+        let mut later = modified_key(Key::Tab, Modifiers::SHIFT);
+        later.extend(key(Key::Enter));
+        native_frame(&mut app, &context, later);
+        for _ in 0..16 {
+            native_frame(&mut app, &context, Vec::new());
+        }
+        assert!(app.zoom_input.is_none());
+        assert_eq!(app.reading.fit, Fit::Custom(2.0));
+    }
+
+    #[test]
+    fn queued_tab_navigation_survives_window_resizes() {
+        let directory = tempfile::tempdir().unwrap();
+        let (mut app, context) = reader(directory.path().join("library.json"));
+        app.open_zoom(&context);
+        app.zoom_input.as_mut().unwrap().value = "175".into();
+        settle(&mut app, &context);
+        native_frame(
+            &mut app,
+            &context,
+            (0..5).flat_map(|_| key(Key::Tab)).collect(),
+        );
+        for size in [
+            Vec2::splat(240.0),
+            Vec2::new(1180.0, 240.0),
+            Vec2::new(240.0, 820.0),
+            Vec2::new(1100.0, 820.0),
+        ] {
+            native_frame_at(&mut app, &context, size, Vec::new());
+        }
+        for _ in 0..8 {
+            native_frame(&mut app, &context, Vec::new());
+        }
+        native_frame(&mut app, &context, key(Key::Enter));
+        assert!(app.zoom_input.is_none());
+        assert_eq!(app.reading.fit, Fit::Custom(1.75));
     }
 
     #[test]

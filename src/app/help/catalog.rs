@@ -3,6 +3,11 @@ const FILTER_NAVIGATION: (&str, &str) = (
     "Move by visible rows / to first or last result (chapter, recent or comment filter)",
 );
 
+const RESULT_NAVIGATION: (&str, &str) = (
+    "↑/↓ · PageUp/PageDown · Home/End (focused result)",
+    "Browse search snippets without navigating · Enter/Space to follow",
+);
+
 pub(super) const SHORTCUTS: &[(&str, &str)] = &[
     ("j / k / h / l", "Scroll down / up / left / right"),
     ("J / K   or   ] / [", "Next / previous page"),
@@ -58,6 +63,10 @@ pub(super) const SHORTCUTS: &[(&str, &str)] = &[
         "Restore the previous / next reading view",
     ),
     ("Alt+j / Alt+k", "Next / previous bookmark, optional count"),
+    (
+        "Alt+↓ / Alt+↑",
+        "Next / previous chapter start, optional count; stops at either end",
+    ),
     ("a / Ctrl/Cmd+0", "100% zoom, keeping the viewport center"),
     ("Ctrl/Cmd+p", "Find a recent document"),
     ("/   or   Ctrl/Cmd+f", "Search document"),
@@ -119,8 +128,20 @@ pub(super) const SHORTCUTS: &[(&str, &str)] = &[
     ("f, then a label", "Follow a visible PDF link"),
     ("F, then a label", "Copy a visible web-link address"),
     ("F11", "Toggle fullscreen"),
+    ("F9", "Toggle reading controls"),
     ("? / F1 / Escape", "Find keyboard shortcuts / close dialog"),
     ("Right-click web link", "Copy link address"),
+    (
+        "Right-click search result",
+        "Copy its snippet without moving the reading view",
+    ),
+    ("Ctrl/Cmd+c (focused result)", "Copy this search snippet"),
+    RESULT_NAVIGATION,
+    ("Shift+F10 (focused result)", "Open the snippet copy menu"),
+    (
+        "Results (search)",
+        "Focus the current match; Enter follows it, Ctrl/Cmd+c copies its snippet",
+    ),
     (
         "Ctrl/Cmd+click PDF",
         "SyncTeX reverse search in the configured editor",
@@ -157,5 +178,16 @@ pub(super) const FIXED_SHORTCUTS: &[(&str, &str)] = &[
     ("Alt+c / Alt+w", "Match case / whole words (search open)"),
     ("Escape", "Close dialog / cancel current mode"),
     ("Right-click web link", "Copy link address"),
+    (
+        "Right-click search result",
+        "Copy its snippet without moving the reading view",
+    ),
+    ("Ctrl/Cmd+c (focused result)", "Copy this search snippet"),
+    RESULT_NAVIGATION,
+    ("Shift+F10 (focused result)", "Open the snippet copy menu"),
+    (
+        "Results (search)",
+        "Focus the current match; Enter follows it, Ctrl/Cmd+c copies its snippet",
+    ),
     ("Ctrl/Cmd+click PDF", "SyncTeX reverse search"),
 ];

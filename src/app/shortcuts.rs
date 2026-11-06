@@ -54,14 +54,24 @@ pub(super) fn filter_motion(
 }
 
 /// Reveal focus transitions and viewport changes without undoing manual scroll.
+/// Call after laying out the scroll content: this may reduce its scroll margin.
 pub(super) fn reveal_focused_control(ui: &mut Ui, viewport: Vec2) {
-    if ui.is_sizing_pass() {
+    if ui.is_sizing_pass() || ui.ctx().will_discard() {
         return;
     }
     let state_id = ui.id().with("focused-control");
-    let state = (ui.memory(|memory| memory.focused()), viewport);
+    // Horizontal bars may grow when an optional control appears without a
+    // viewport resize. Content width is stable during manual scrolling, unlike
+    // screen-space positions, so it can reveal moved controls without pulling
+    // a manually scrolled bar back on every frame.
+    let content_width = (viewport.y == 0.0).then(|| ui.min_size().x);
+    let state = (
+        ui.memory(|memory| memory.focused()),
+        viewport,
+        content_width,
+    );
     let previous = ui.data_mut(|data| {
-        let previous = data.get_temp::<(Option<Id>, Vec2)>(state_id);
+        let previous = data.get_temp::<(Option<Id>, Vec2, Option<f32>)>(state_id);
         data.insert_temp(state_id, state);
         previous
     });
@@ -78,16 +88,47 @@ pub(super) fn reveal_focused_control(ui: &mut Ui, viewport: Vec2) {
             && response.layer_id == ui.layer_id()
             && ui.min_rect().contains_rect(response.rect)
         {
+            // ScrollArea reserves item spacing on either side of its target.
+            // Reduce only that end-of-layout margin when a control nearly
+            // fills the viewport, so both edges can remain visible.
+            if viewport.y > 0.0 {
+                let margin = ((ui.clip_rect().height() - response.rect.height()) * 0.5).max(0.0);
+                ui.spacing_mut().item_spacing.y = ui.spacing().item_spacing.y.min(margin);
+            }
             response.scroll_to_me_animation(None, egui::style::ScrollAnimation::none());
         }
     }
 }
 
+/// Locate focused controls without releasing text focus on an outside click.
+pub(super) fn focused_in_region(
+    context: &egui::Context,
+    region: Option<(egui::LayerId, egui::Rect)>,
+) -> bool {
+    let Some((layer, rect)) = region else {
+        return false;
+    };
+    let Some(id) = context.memory(|memory| memory.focused()) else {
+        return false;
+    };
+    let _focus = preserve_pointer_focus(context);
+    context.read_response(id).is_some_and(|response| {
+        response.enabled()
+            && response.layer_id == layer
+            && response.interact_rect.is_positive()
+            && rect.contains_rect(response.interact_rect)
+    })
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum InputButton {
+    CurrentChapter,
+    ReadingControls,
     Help,
     Find,
+    History(bool),
     Search(SearchButton),
+    Menu(Id),
     Comments,
     CloseComments,
     Page,
@@ -109,23 +150,38 @@ pub(super) enum SearchButton {
     Previous,
     Next,
     Results,
+    Copy,
+    Stop,
+    Restart,
     Close,
 }
 
 #[derive(Default)]
 pub(super) struct InputButtons {
+    pub current_chapter: Option<Id>,
+    pub reading_controls: Option<Id>,
     pub help: Option<Id>,
     pub find: Option<Id>,
+    pub history_back: Option<Id>,
+    pub history_forward: Option<Id>,
     pub search_case: Option<Id>,
     pub search_word: Option<Id>,
     pub search_previous: Option<Id>,
     pub search_next: Option<Id>,
     pub search_results: Option<Id>,
+    pub search_copy: Option<Id>,
+    pub search_history: Option<Id>,
+    pub search_stop: Option<Id>,
+    pub search_restart: Option<Id>,
     pub close_search: Option<Id>,
     pub comments: Option<Id>,
     pub close_comments: Option<Id>,
     pub page: Option<Id>,
     pub zoom: Option<Id>,
+    pub view_menu: Option<Id>,
+    pub comment_filter_menu: Option<Id>,
+    pub comment_status_menu: Option<Id>,
+    pub comment_actions_menu: Option<Id>,
     pub restore_deleted: Option<Id>,
     pub reload_changed: Option<Id>,
     pub dismiss_change: Option<Id>,
@@ -137,6 +193,67 @@ pub(super) struct InputButtons {
 }
 
 impl InputButtons {
+    /// Let a new popup establish its item focus before later actions arrive.
+    pub fn menu_input_split(
+        &self,
+        context: &egui::Context,
+        events: &std::collections::VecDeque<Event>,
+        limit: usize,
+    ) -> Option<usize> {
+        let opener = events.iter().take(limit).position(|event| {
+            self.menus().any(|id| {
+                button_activated(context, event, id)
+                    && !egui::Popup::is_id_open(context, id.with("popup"))
+            })
+        })?;
+        events
+            .iter()
+            .take(limit)
+            .enumerate()
+            .skip(opener + 1)
+            .find_map(|(index, event)| super::focus_input::changes_input(event).then_some(index))
+    }
+
+    /// Results transfers focus into a different, possibly newly visible panel.
+    pub fn results_input_split(
+        &self,
+        context: &egui::Context,
+        events: &std::collections::VecDeque<Event>,
+        limit: usize,
+    ) -> Option<usize> {
+        if egui::Popup::is_any_open(context) {
+            return None;
+        }
+        let id = self.search_results?;
+        let opener = events
+            .iter()
+            .take(limit)
+            .position(|event| button_activated(context, event, id))?;
+        events
+            .iter()
+            .take(limit)
+            .enumerate()
+            .skip(opener + 1)
+            .find_map(|(index, event)| super::focus_input::changes_input(event).then_some(index))
+    }
+
+    fn menus(&self) -> impl Iterator<Item = Id> {
+        [
+            self.search_history,
+            self.view_menu,
+            self.comment_filter_menu,
+            self.comment_status_menu,
+            self.comment_actions_menu,
+        ]
+        .into_iter()
+        .flatten()
+    }
+
+    pub fn control_menu_open(&self, context: &egui::Context) -> bool {
+        self.menus()
+            .any(|id| egui::Popup::is_id_open(context, id.with("popup")))
+    }
+
     pub fn search_has_focus(&self, context: &eframe::egui::Context) -> bool {
         context.memory(|memory| {
             [
@@ -145,6 +262,10 @@ impl InputButtons {
                 self.search_previous,
                 self.search_next,
                 self.search_results,
+                self.search_copy,
+                self.search_history,
+                self.search_stop,
+                self.search_restart,
                 self.close_search,
             ]
             .into_iter()
@@ -154,9 +275,23 @@ impl InputButtons {
     }
 
     pub fn clicked(&self, context: &eframe::egui::Context) -> Option<InputButton> {
+        // Menu activation stays in egui so the newly shown popup can focus its
+        // first item. Its open state must change before reader keys are routed.
+        for id in self.menus() {
+            if context
+                .read_response(id)
+                .is_some_and(|response| response.clicked())
+            {
+                return Some(InputButton::Menu(id));
+            }
+        }
         for (id, action) in [
+            (self.current_chapter, InputButton::CurrentChapter),
+            (self.reading_controls, InputButton::ReadingControls),
             (self.help, InputButton::Help),
             (self.find, InputButton::Find),
+            (self.history_back, InputButton::History(false)),
+            (self.history_forward, InputButton::History(true)),
             (self.search_case, InputButton::Search(SearchButton::Case)),
             (self.search_word, InputButton::Search(SearchButton::Word)),
             (
@@ -167,6 +302,12 @@ impl InputButtons {
             (
                 self.search_results,
                 InputButton::Search(SearchButton::Results),
+            ),
+            (self.search_copy, InputButton::Search(SearchButton::Copy)),
+            (self.search_stop, InputButton::Search(SearchButton::Stop)),
+            (
+                self.search_restart,
+                InputButton::Search(SearchButton::Restart),
             ),
             (self.close_search, InputButton::Search(SearchButton::Close)),
             (self.comments, InputButton::Comments),
@@ -211,6 +352,59 @@ impl InputButtons {
     }
 }
 
+fn button_activated(context: &egui::Context, event: &Event, id: Id) -> bool {
+    let keyboard = matches!(event, Event::Key {
+        key: Key::Enter | Key::Space,
+        pressed: true,
+        modifiers,
+        ..
+    } if modifiers.is_none());
+    let pointer = match event {
+        Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            ..
+        } => Some(*pos),
+        _ => None,
+    };
+    if !keyboard && pointer.is_none() {
+        return false;
+    }
+    if keyboard && !context.memory(|memory| memory.has_focus(id)) {
+        return false;
+    }
+    context.read_response(id).is_some_and(|response| {
+        response.enabled()
+            && (keyboard
+                || pointer.is_some_and(|pos| {
+                    response.interact_rect.contains(pos)
+                        && context
+                            .layer_id_at(pos)
+                            .is_none_or(|layer| layer == response.layer_id)
+                }))
+    })
+}
+
+/// `keys` already toggled the menu; drawing must not toggle it again after
+/// subsequent keys such as Escape. Keyboard opening selects its first item.
+pub(super) fn show_menu<R>(
+    ui: &mut Ui,
+    response: &egui::Response,
+    content: impl FnOnce(&mut Ui, bool) -> R,
+) -> Option<egui::InnerResponse<R>> {
+    let state_id = response.id.with("menu-open");
+    let was_open = ui.data(|data| data.get_temp::<bool>(state_id).unwrap_or(false));
+    let keyboard_open =
+        !was_open && response.clicked() && !response.clicked_by(egui::PointerButton::Primary);
+    let inner = egui::Popup::menu(response)
+        .open_memory(None)
+        .show(|ui| content(ui, keyboard_open));
+    let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(response));
+    ui.data_mut(|data| data.insert_temp(state_id, open));
+    inner
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum ZoomAction {
     In,
@@ -230,21 +424,7 @@ pub(super) fn zoom_action(key: Key, modifiers: Modifiers) -> Option<ZoomAction> 
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum KeyText {
-    None,
-    Character(char),
-    Other,
-}
-
-impl KeyText {
-    pub(super) fn character(self) -> Option<char> {
-        match self {
-            Self::Character(character) => Some(character),
-            _ => None,
-        }
-    }
-}
+pub(super) use crate::input_actions::KeyText;
 
 pub(super) fn reader_zoom_action(key: Key, shift: bool, text: KeyText) -> Option<ZoomAction> {
     match text {
@@ -277,46 +457,6 @@ pub(super) fn count_digit(key: Key, shift: bool, text: KeyText) -> Option<char> 
         },
         _ => None,
     }
-}
-
-pub(super) fn reader_actions(input: &InputState) -> impl Iterator<Item = (Event, KeyText)> + '_ {
-    input
-        .events
-        .iter()
-        .enumerate()
-        .filter_map(|(index, event)| {
-            let action = matches!(
-                event,
-                Event::Copy
-                    | Event::Key { pressed: true, .. }
-                    | Event::PointerButton {
-                        button: eframe::egui::PointerButton::Extra1
-                            | eframe::egui::PointerButton::Extra2,
-                        pressed: true,
-                        ..
-                    }
-            );
-            if !action {
-                return None;
-            }
-            // Some characters have no egui key and fall back to a physical
-            // digit/letter. Keep this press's literal text to distinguish them.
-            let text = if matches!(event, Event::Key { .. }) {
-                match input.events.get(index + 1) {
-                    Some(Event::Text(text)) => {
-                        let mut characters = text.chars();
-                        match (characters.next(), characters.next()) {
-                            (Some(character), None) => KeyText::Character(character),
-                            _ => KeyText::Other,
-                        }
-                    }
-                    _ => KeyText::None,
-                }
-            } else {
-                KeyText::None
-            };
-            Some((event.clone(), text))
-        })
 }
 
 pub(super) struct PointerFocusGuard {
@@ -410,11 +550,22 @@ pub(super) fn text_input(
     deferred: &mut Vec<Event>,
     field: eframe::egui::TextEdit<'_>,
 ) -> (eframe::egui::Response, bool) {
+    let (output, focused_now) = text_input_output(ui, id, requested, deferred, field);
+    (output.response, focused_now)
+}
+
+pub(super) fn text_input_output(
+    ui: &mut Ui,
+    id: Id,
+    requested: &mut bool,
+    deferred: &mut Vec<Event>,
+    field: eframe::egui::TextEdit<'_>,
+) -> (eframe::egui::text_edit::TextEditOutput, bool) {
     let focused_now = focus_text_input(ui, id, requested, deferred);
     // Opening a field with a button must not let that outside click undo
     // the explicit focus request before this frame's text is processed.
     let _focus = focused_now.then(|| preserve_pointer_focus(ui.ctx()));
-    (ui.add(field.id(id)), focused_now)
+    (field.id(id).show(ui), focused_now)
 }
 
 pub(super) fn focus_clicked_input(context: &eframe::egui::Context, id: Id) -> bool {
@@ -776,16 +927,22 @@ mod tests {
                     Event::Text(symbol.to_string()),
                     key(Key::J, Modifiers::SHIFT, true),
                 ];
-                let actions: Vec<_> = reader_actions(&input).collect();
+                let actions: Vec<_> = crate::input_actions::reader_actions(&input).collect();
                 assert_eq!(actions.len(), 4);
                 assert_eq!(
                     actions
                         .iter()
-                        .map(|(_, text)| text.character())
+                        .map(|action| match action {
+                            crate::input_actions::ReaderAction::Key { text, .. } =>
+                                text.character(),
+                            _ => None,
+                        })
                         .collect::<Vec<_>>(),
                     [Some('5'), Some('0'), Some(symbol), None]
                 );
-                assert!(matches!(&actions[2].0, Event::Key { key, .. } if *key == symbol_key));
+                assert!(
+                    matches!(&actions[2], crate::input_actions::ReaderAction::Key { key, .. } if *key == symbol_key)
+                );
             }
         }
     }
@@ -829,9 +986,14 @@ mod tests {
             Event::Text(String::new()),
             key(Key::Num3, Modifiers::NONE, true),
         ];
-        let digits: Vec<_> = reader_actions(&input)
-            .map(|(event, text)| {
-                let Event::Key { key, modifiers, .. } = event else {
+        let digits: Vec<_> = crate::input_actions::reader_actions(&input)
+            .map(|event| {
+                let crate::input_actions::ReaderAction::Key {
+                    key,
+                    modifiers,
+                    text,
+                } = event
+                else {
                     unreachable!()
                 };
                 count_digit(key, modifiers.shift, text)

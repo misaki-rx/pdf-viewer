@@ -66,20 +66,20 @@ jobs:
         include:
           - shard: 1
             tests: >-
-              vim-view fit-height paths close properties cli load-cancel errors search-results
-              marks comment-navigation
+              vim-view fit-height paths close properties cli load-cancel errors search-results search-stop
+              marks removal-focus comment-navigation comment-menus recent-remove search-history view-menu
           - shard: 2
             tests: >-
               search-options search-phrases percentage bookmarks link-copy link-hints
-              search-dense outline-keyboard search-load help comments
+              search-dense outline-keyboard outline-current search-load help comments comment-filter-load
           - shard: 3
             tests: >-
               input-burst relative outline mouse-history link-menu continuous
-              recent welcome password zoom persistence install-linux preview-layout
+              recent welcome password zoom dialog-focus persistence install-linux preview-layout
           - shard: 4
             tests: >-
-              desktop destinations thumbnails selection selection-scroll
-              page-size tiles long-title file-watch mouse-input
+              desktop destinations thumbnails toolbar-focus selection selection-scroll
+              page-size tiles long-title file-watch mouse-input toolbar-history reading-controls page-keyboard
     steps:
       - uses: actions/checkout@v4
       - name: Linux desktop runtime dependencies
@@ -88,6 +88,12 @@ jobs:
         with:
           name: pagewing-Linux-X64
           path: target
+      - name: Xvfb display isolation and cleanup
+        if: matrix.shard == 1
+        run: python3 scripts/test-with-xvfb.py
+      - name: Desktop locator and synchronization checks
+        if: matrix.shard == 1
+        run: python3 scripts/with-xvfb.py python3 scripts/test-desktop.py
       - name: Native desktop smoke tests
         env:
           SMOKE_TESTS: ${{ matrix.tests }}
@@ -96,7 +102,7 @@ jobs:
           failed=0
           for test in $SMOKE_TESTS; do
             echo "::group::smoke-$test"
-            if ! xvfb-run -a -s '-screen 0 1280x1024x24' python3 "scripts/smoke-$test.py" target/release/pagewing; then
+            if ! python3 scripts/with-xvfb.py python3 "scripts/smoke-$test.py" target/release/pagewing; then
               echo "::error::smoke-$test failed"
               failed=1
             fi

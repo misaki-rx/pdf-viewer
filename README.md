@@ -121,9 +121,15 @@ require('tex-tools').setup({
 
 按 `v` 进入选择模式并拖选文字，点击工具栏 **Add comment**（或 `Ctrl/Cmd+Shift+h`），在右侧 Comments 面板输入批注后点击 **Save comment**（或 `Ctrl/Cmd+Enter`）。保存直接更新当前 PDF 文件，并保留阅读位置；无需选择保存路径，不生成副本或备份。每次保存一条新增或修改的批注，可继续添加下一条。快速输入后立即按保存快捷键也会保留末尾文字；同一批操作中的隐藏面板与翻页不会丢弃已请求的保存。保存完成前会阻止关闭、重载或恢复其他文档，完成后可重试。comment 可以包含中文和多行文字，也可以留空以只保存高亮。
 
-打开 PDF 后，**Comments** 侧栏默认关闭。点击工具栏 **Comments**（或 `Ctrl/Cmd+Shift+m`）可显示或隐藏面板。右侧列表按文档页序展示批注线程，回复缩进排列在父批注下，以固定高度卡片显示页码、作者、状态与正文摘要；悬停或打开编辑器可查看全文。列表只绘制可见条目，面板宽度可拖动调整。编辑器的保存和放弃按钮固定在面板底部，长批注与小窗口也能直接操作；底部显示已保存或未保存状态。紧凑窗口使用 **Save / Discard**，回复和删除收进 **More…** 菜单。点击条目会跳到对应页面，并可编辑 comment；普通阅读模式下，悬停高亮可预览 comment，点击高亮可打开编辑器。单页和连续滚动模式均支持；读取 PDF 的 `Contents` 文本，不包含云端讨论或独立的 Skim notes 文件。
+打开 PDF 后，**Comments** 侧栏默认关闭。点击工具栏 **Comments**（或 `Ctrl/Cmd+Shift+m`）可显示或隐藏面板。右侧列表按文档页序展示批注线程，回复缩进排列在父批注下，以固定高度卡片显示页码、作者、状态与正文摘要；悬停或打开编辑器可查看全文。列表只绘制可见条目，面板宽度可拖动调整。编辑器的保存和放弃按钮固定在面板底部，长批注与小窗口也能直接操作；底部显示已保存或未保存状态。紧凑窗口使用 **Save / Discard**，回复和删除收进 **More…** 菜单。保存与放弃按钮的键盘焦点在宽、窄布局切换后仍保留，按 `Enter` 或空格激活当前操作。点击条目会跳到对应页面，并可编辑 comment；普通阅读模式下，悬停高亮可预览 comment，点击高亮可打开编辑器。单页和连续滚动模式均支持；读取 PDF 的 `Contents` 文本，不包含云端讨论或独立的 Skim notes 文件。
 
-批注筛选：面板顶部可按正文与作者搜索，支持 Unicode 大小写折叠和空格分隔的多个关键词；各词可分别匹配作者或正文。可叠加 **All statuses** 状态选择、**Marked only** 勾选标记及 **Current page** 当前页筛选。
+批注筛选：面板顶部可按正文与作者搜索，支持 Unicode 大小写折叠和空格分隔的多个关键词；各词可分别匹配作者或正文。可叠加 **All statuses** 状态选择、**Marked only** 勾选标记及 **Current page** 当前页筛选。窄面板中筛选控件纵向排列并自动换行；筛选和编辑器的状态框随可用宽度收缩，悬停可查看完整状态，下拉选项保留完整文字并支持滚动。
+
+面板标题旁的 **Copy** 将当前筛选列表中的已保存批注复制为文本，包括尚未滚动到的条目、父级上下文、物理页码、PDF 页码标签、作者、回复深度、审阅状态、勾选标记和完整的已加载正文。未保存的编辑仍保留在草稿中，保存后再复制可取得新版正文。结果按线程顺序排列；加载时被截断的正文或受限的批注列表会附带说明。单次复制最多 8 MiB，达到上限时只保留完整批注，并明确显示已复制条数与列表总数。
+
+可用 `Tab` / `Shift+Tab` 在批注控件间移动焦点，聚焦 **Copy** 后按 `Enter` 或空格复制；控件激活不会同时滚动 PDF，控件间的 Tab 不会切换左侧栏。焦点回到阅读区后，Tab 继续使用原有侧栏切换操作。
+
+`Tab` / `Shift+Tab` 也可逐项访问长批注列表中的卡片，列表会显露聚焦项；缩窗后保留同一卡片的焦点。焦点移动不会打开编辑器或改变阅读页，按 `Enter` 或空格才打开对应批注。编辑器已打开时，调整窗口优先显示当前聚焦卡片，保留编辑内容；平时仍可自由滚动列表。
 
 命中回复时保留它的父批注作为上下文，并区分实际命中数与展示条数。在筛选框中用 `↑` / `↓` 或 `Ctrl+j/k` 选择条目，按 `Enter` 打开；更改筛选后默认选中首个实际命中，列表自动滚动到选中条目。键盘移动只滚动必要距离；调整窗口或面板大小、打开编辑器后会重新显示当前条目，正常手动滚动仍会保留。键盘也可选择保留的父批注；空结果不会跳转，未保存草稿继续受到保护。
 
@@ -131,13 +137,21 @@ require('tex-tools').setup({
 
 **Clear filters** 清除全部条件。筛选不会改变 PDF 上的批注显示或丢弃编辑草稿；保存批注及重载当前文档后保留条件，切换文档时重置。小窗口中整个面板也可滚动。通过快捷键、工具栏或面板的关闭按钮隐藏批注时会立即释放输入焦点，随后输入的阅读快捷键可直接使用；筛选和草稿继续保留。
 
+长批注正文在有高度上限的区域内独立滚动，正常窗口中查看或编辑末尾时，筛选框和状态控件仍可直接操作。`Ctrl/Cmd+Home/End` 可到达正文首尾；小窗口中整面板仍可滚动，光标会同时在正文和面板中保持可见。手动滚动查看其他段落时不会自动跳回光标，继续编辑或移动光标后才重新定位。只读、锁定或正在保存的正文也可滚动阅读。
+
+较大的批注列表筛选时会显示进度，仍可修改条件、打开帮助和操作窗口；更改条件会取消旧筛选。筛选框内的导航和回车会等待对应结果准备好，保留未保存的编辑草稿。批注尚在读取时也可先输入筛选词并按回车；筛选完成前暂停 Copy，避免复制不完整的结果。
+
 嵌套回复：选中已保存的批注，点击 **Reply**，输入回复后使用 **Save comment**（或 `Ctrl/Cmd+Enter`）保存。回复也可以继续回复，支持多层嵌套；深层回复的缩进会限制宽度，保留可读空间。回复以标准 PDF Text 批注及 `IRT` / `RT=R` 关系保存在原文件中，不会再创建文字高亮。已有 Acrobat 回复会自动组成线程。
 
 批注状态：编辑器提供 **Status** 选择器，支持 **None**（无状态）、**Accepted**（已接受）、**Rejected**（已拒绝）、**Cancelled**（已取消）、**Completed / resolved**（已完成／已解决），以及独立的 **Marked (Acrobat checkmark)** 勾选标记。点击 **Save comment** 后写入 PDF；只改状态也会作为未保存草稿保护。状态使用 Acrobat 的标准 `StateModel=Review` / `Marked` 与 `State` 文本字段，保存为独立的状态回复，侧栏不会把它们显示成空白 comment。**Status history** 可查看各作者的状态记录；Pagewing 添加自己的状态，保留其他审阅者的历史。界面优先显示 Pagewing 的状态，否则显示读取到的外部状态。这里“已解决”对应本地 PDF 的 **Completed**，不连接 Acrobat 云端审阅的 Resolve 操作。
 
+批注的状态筛选、编辑器 **Status** 和紧凑窗口的 **More…** 菜单均支持键盘打开、方向键及 Tab / Shift+Tab 循环选择、Enter / 空格确认。最小窗口中会显露当前选项；状态菜单在调整窗口尺寸后保留选项焦点。Escape 先关闭菜单，保留面板、筛选与未保存草稿。
+
 删除批注：在右侧列表中选中已保存的条目，点击 **Delete comment & highlight**。程序会直接更新当前 PDF，删除整条批注及其高亮、关联弹窗、多层回复和状态历史，列表自动刷新，也会清理其他页面上引用该批注的回复。选中回复时显示 **Delete reply & replies**，只删除这条回复及其子回复，保留父批注和其他分支。FreeText 和超长批注也可整条删除，锁定批注不能删除。若只想删除 comment 文字并保留高亮，清空编辑框后点击 **Save comment**。尚未保存的新批注使用 **Discard / close editor** 放弃。
 
 隐藏 Comments 面板会保留草稿；**Discard / close editor** 放弃本条修改。存在未保存草稿时，切换、关闭、重新加载文档或退出会提示先保存或放弃，避免丢失输入。保存采用 PDF 标准 Highlight/Contents 字段和高亮外观流，其他 PDF 阅读器也可显示；编辑现有 comment 时保留其他批注及页面内容。保存会先完成临时文件写入，再替换当前 PDF；若磁盘文件已被其他程序修改，会报告错误并保留 comment 草稿，避免覆盖外部更改。加密 PDF 暂不支持保存批注；锁定批注不能修改，超长批注及 FreeText 的文字只读，但可添加回复及状态而不改动原文。批注扫描最多检查 100,000 个条目并展示 10,000 条，超出时显示提示。
+
+批注面板上方打开帮助、文档信息或最近文档窗口时，`Escape` 先关闭该窗口，保留批注面板、筛选和草稿；再次按下才隐藏批注面板。下拉菜单打开时，先关闭菜单。
 
 ## 配置文件
 
@@ -174,29 +188,53 @@ night = []                 # 停用该动作的快捷键
 
 ## 键盘操作
 
-窗口最小尺寸为 240 × 240 像素，支持同时缩窄宽度和高度。顶部工具栏和搜索栏在按钮放不下时可横向滚动：将指针移到栏内使用鼠标滚轮、触控板左右滑动，或拖动栏底部的横向滚动条。底部缩放与 View 显示模式菜单在窄窗口中也可横向滚动访问；侧栏内容可纵向滚动。
+窗口最小尺寸为 240 × 240 像素，支持同时缩窄宽度和高度。顶部工具栏及底部页码、缩放、View 按钮保留各自的键盘焦点，缩窗、出现选区操作或状态提示变化后会显露聚焦项；`Tab` / `Shift+Tab` 在控件间移动，`Enter` / 空格激活，`Escape` 将焦点交回阅读区。
+
+顶部工具栏和搜索栏在按钮放不下时可横向滚动：将指针移到栏内使用鼠标滚轮、触控板左右滑动，或拖动栏底部的横向滚动条。底部缩放与 View 显示模式菜单在窄窗口中也可横向滚动访问；侧栏内容可纵向滚动。
 
 矮窗口会收起侧栏顶部的文件摘要，优先显示目录筛选和章节列表。按 `c` 聚焦目录后，键盘选中项会保持可见；调整窗口尺寸后仍能继续选择和回车跳转，支持 240 × 240 的最小窗口。
+
+侧栏控件聚焦时，`Tab` / `Shift+Tab` 在章节、书签、命名位置和页面控件间移动，`Enter` / 空格激活按钮；焦点切换或窗口缩小时会显露聚焦控件。`Escape` 将焦点交回阅读区，随后 `Tab` 继续切换侧栏。
+
+长列表会按焦点自动滚动，可用 `Tab` 连续访问初始可见范围之外的行。缩窗或放大字体后保留聚焦行，当前阅读页保持不变；按 `Enter` 或空格后才跳转。普通手动滚动不会持续被拉回。
+
+页面预览以加粗边框标示键盘焦点，当前阅读页仍保留原有高亮。可先用 `Tab` 选中其他预览，再按 `Enter` 或空格打开；`Escape` 返回阅读区并移除焦点边框。
+
+增删或恢复其他书签、命名位置后，焦点仍绑定原来的目标；长书签列表重排时会显露聚焦项。删除聚焦项本身时，不会把焦点转交给占据原行的其他目标。
 
 当前页码与总页数显示在底栏，点击可打开页码跳转对话框。页面导航快捷键只在阅读模式生效，输入搜索词或页码时不会触发页面导航。按 `?` 查看内置帮助。
 
 搜索框与搜索按钮之间可用 Tab / Shift+Tab 移动焦点，Enter 或 Space 激活按钮。横向控件栏会在焦点变化或窗口变窄时显露当前控件；手动滚动后保留滚动位置。切换 Aa / Word 后焦点回到搜索框，可继续输入查询；按钮上的空格不会滚动页面或写进搜索词。
 
+在搜索框中连续按 `Enter` / `Shift+Enter`，或在阅读区连续按 `n` / `N` 时，每次搜索跳转按输入顺序执行；后台结果尚未到齐时保留待处理请求，搜索完成前不提前绕回。修改查询、手动翻页、选择结果或关闭搜索会取消待处理请求，避免稍后突然跳页。
+
+搜索栏的 **History** 可复用当前窗口最近 16 条已执行的查询。按 Enter、Prev / Next、`n` / `N` 或选择搜索结果时加入记录，重复查询移到最前；仅输入而未确认的草稿不加入。选择记录保留当前 Aa / Word 选项，清除旧结果并选中整个查询，按 Enter 才跳到新的匹配项。键盘打开菜单后用方向键选择、Enter 确认，Escape 仅关闭菜单；窄窗口可先用 Tab 聚焦 History，控件会自动显露。**Clear history** 清空记录，保留当前查询和结果。记录可跨同一窗口中的文档切换使用，关闭窗口后释放，不写入磁盘；超过 4096 字节的查询仍可搜索，但不加入记录。
+
 词组搜索按顺序匹配文字，词间的空格可匹配换行、缩进、连续空格或不换行空格。例如 `alpha extraordinary omega` 可以找到分布在三行的词组；不会匹配连在一起或顺序相反的词。选中文字后打开 Find，会将选区中的空白整理为单个空格填入搜索框，支持多行选区；空选区保留原查询。复制原文仍保留换行。词组限于同一页，按 PDF 文本层的提取顺序搜索。
 
-侧栏搜索结果会在摘要中标出当前命中的原文，支持 Unicode 大小写折叠，例如 `STRASSE` 对应 `Straße`。结果行保留少量前文，让命中词靠近行首；悬停可查看较完整的上下文。浅色与深色界面均提供高亮，点击结果跳转到对应页面。
+侧栏搜索结果会在摘要中标出当前命中的原文，支持 Unicode 大小写折叠，例如 `STRASSE` 对应 `Straße`。结果行保留少量前文，让命中词靠近行首；悬停可查看较完整的上下文。浅色与深色界面均提供高亮，点击结果跳转到对应页面。右键结果行选择 **Copy snippet** 可复制该条摘要，保留阅读页、页内位置和当前匹配项。结果行获得键盘焦点后，可按 `Ctrl/Cmd+C` 直接复制，或按 `Shift+F10` 打开菜单；菜单打开后可按 `Enter` 或空格复制，`Escape` 取消。用键盘关闭菜单后会回到原结果行，调整窗口大小时也可继续操作。复制内容与悬停摘要相同，仅包含命中附近的预览文字。
 
-**Results** 会打开侧栏并显露当前匹配项；尚未选择匹配项时显示首条结果，保留阅读页码。`n` / `N` 会同步显露结果区，相邻行已可见时只移动选择。窗口缩放或字体放大后，原本可见的当前结果会继续保持可见；手动滚离后保留滚动位置，再按 **Results** 可返回当前匹配项。
+搜索栏的 **Copy results** 可复制当前已找到的全部结果摘要，包括未滚动到的条目，并附上文件、查询、匹配选项、物理页码和 PDF 页码标签。复制不跳页、不改变当前命中；在按钮上按 `Enter` 或空格也可操作。搜索尚未完成或达到结果上限时会注明，摘要只包含预览文字。剪贴板最多 8 MiB，超限时保留完整条目并报告复制数量；文件、查询及页码标签超过 1024 个字符时明确标记截断。没有结果时按钮不可用；修改查询后须等待新结果，避免复制旧查询的摘要。
+
+**Results** 会打开侧栏，显露并聚焦当前匹配项；尚未选择匹配项时聚焦首条结果，保留阅读页码和当前匹配。无需逐一经过章节、书签，就能按 `Ctrl/Cmd+C` 复制摘要或按 `Enter` 跳转到该结果。结果尚未到达时，只有焦点仍停留在 **Results** 按钮上才会自动进入首条结果；返回查询框或修改查询会取消这次焦点移交。`n` / `N` 会同步显露结果区，相邻行已可见时只移动选择。窗口缩放或字体放大后，原本可见的当前结果会继续保持可见；手动滚离后保留滚动位置，再按 **Results** 可返回当前匹配项。
+
+结果行聚焦时，可用 `↑/↓` 逐条浏览，`PageUp/PageDown` 按结果列表当前视口的行数移动，`Home/End` 到首尾。列表会显露新焦点，保留阅读页、页内位置及当前匹配，按 `Enter` 或空格才跳转；`Ctrl/Cmd+C` 复制聚焦行的摘要。翻页步长随窗口及字体调整，在首尾停住，不循环。关闭搜索栏后，聚焦结果行仍可浏览；`Escape` 释放焦点并返回阅读快捷键。
+
+搜索期间点击 **Stop** 可停止后台扫描，正在进行的单页文字提取会先完成。已找到的结果、当前选中项和阅读位置会保留；`n` / `N`、结果列表和复制仍可使用。匹配数旁会注明 stopped，复制摘要会说明搜索由用户停止。点击 **Restart** 从文档开头重新搜索，替换这份部分结果；修改查询、切换匹配选项或重载文档也会重新搜索。按钮支持 Tab 聚焦后按 Enter 或空格操作，窄窗口中会随焦点横向显露；扫描进度变化或调整窗口尺寸时保留原控件的焦点。
 
 按 `Ctrl/Cmd+Alt+Z` 或点击底栏的缩放比例可直接输入百分比，例如 `125` 或 `125%`，按 Enter 或点击 Apply 应用；也可选择 50%、100%、150%、200% 预设。快捷键可通过配置中的 `zoom` 动作更改或停用。缩放保留视口中心，支持单页、连续和双页模式。超出页面允许范围的比例会限制到实际可用值；错误输入保留在框内，Escape 或 Cancel 放弃修改。
 
 缩放窗口在 240 × 240 的最小阅读窗口中同时显示输入框、错误提示、全部预设及 Apply / Cancel，无需滚动。按 Tab 可依次选择预设与操作，Enter 执行；调整窗口尺寸保留正在编辑的比例。
 
-帮助窗口支持按按键或功能说明筛选，例如 `zoom`、`copy link`；多个词需要同时匹配，英文不区分大小写。Copy shortcuts 可复制当前结果，清空筛选后可复制全部快捷键。窄窗口中快捷键和说明逐条排列，长列表可滚动；240 × 240 窗口中仍可筛选、复制和关闭。`Escape` 返回阅读，重新打开帮助会清空上次筛选。
+在输入框和控件间导航时，同批到达的多个 Tab / Shift+Tab 按顺序逐帧移动焦点，随后输入的 Enter / 空格等待焦点移动完成，再激活对应操作；Tab 前的文字先交给原输入框。突发按键可能需要数帧完成。
 
-文档信息窗口在窄窗口中按字段逐条排列，文件路径和长标题会换行，内容可滚动，Copy details 和 Close 按钮保持可见；按 `y` 仍可复制完整信息。文档信息与最近文档窗口都支持 240 × 240 的最小尺寸，放大窗口后恢复桌面布局。
+帮助窗口支持按按键或功能说明筛选，例如 `zoom`、`copy link`；多个词需要同时匹配，英文不区分大小写。改变筛选条件会显示首条匹配，平时保留手动滚动的位置。Copy shortcuts 可复制当前结果，清空筛选后可复制全部快捷键。窄窗口中快捷键和说明逐条排列，长列表可滚动；240 × 240 窗口中仍可筛选、复制和关闭。复制和关闭按钮在调整窗口尺寸后保留键盘焦点，Enter 或空格激活；复制后焦点回到筛选框。`Escape` 返回阅读，重新打开帮助会清空上次筛选并从列表顶部开始。
 
-页码跳转和密码输入窗口也支持最小尺寸。无效页码会在输入框下显示提示并保留文字；Go / Unlock 提交，Cancel、窗口关闭按钮或 Escape 取消。批注面板打开时，Escape 优先关闭当前输入窗口。密码默认隐藏，可勾选 Show password 检查输入；取消会丢弃这次输入，密码不写入阅读状态。
+文档信息窗口在窄窗口中按字段逐条排列，文件路径和长标题会换行，内容可滚动，Copy details 和 Close 按钮保持可见；按 `y` 仍可复制完整信息。可见字段的文字选区在双列与单列重排后保留，`Ctrl/Cmd+c` 继续复制所选文字；重载或切换文档后不复用旧选区。文档信息与最近文档窗口都支持 240 × 240 的最小尺寸，放大窗口后恢复桌面布局。
+
+页码跳转和密码输入窗口也支持最小尺寸。页码的 Go / Cancel、缩放预设和 Apply / Cancel 在窗口缩放后保留键盘焦点，Enter 或空格激活原来的操作。无效页码会在输入框下显示提示并保留文字；Go / Unlock 提交，Cancel、窗口关闭按钮或 Escape 取消。批注面板打开时，Escape 优先关闭当前输入窗口。密码默认隐藏，可勾选 Show password 检查输入；取消会丢弃这次输入，密码不写入阅读状态。
+
+页码窗口输入停顿 150 毫秒后会预览目标物理页码与 PDF 标签，例如 `1` 指向物理第一页，`=1` 指向标签为 1 的页；相对页码和百分比也会显示实际目标。长标签单行省略，悬停预览可查看完整的已读取标签。预览不翻页、不改变阅读历史；修改后立即按 Enter 或 Go 会按最新输入跳转，Escape 或 Cancel 放弃。PDF 刷新后会重新计算预览。
 
 | 按键 | 操作 |
 | --- | --- |
@@ -227,6 +265,7 @@ night = []                 # 停用该动作的快捷键
 | `Ctrl/Cmd+p` | 筛选最近文档；方向键或 `Ctrl+j/k` 选择，回车打开 |
 | `s`，然后 `y` | 查看文档信息并复制路径、格式、大小、页数和元数据 |
 | `c` | 筛选章节；方向键或 `Ctrl+j/k` 逐条选择，`PageUp/PageDown` 按视口移动，回车跳转 |
+| `Alt+↓` / `Alt+↑`，`3 Alt+↓` | 下一个 / 前一个章节起始页，支持数字计数；在两端停止 |
 | `Alt+c` / `Alt+w` | 搜索栏打开时切换区分大小写 / 整词匹配 |
 | `n` / `N`，`3n` / `3N` | 下一个 / 上一个搜索匹配，支持数字计数（`F3` / `Shift+F3` 同样生效） |
 | `f`，然后输入标签 | 跟随当前可见的 PDF 链接；`Escape` 取消 |
@@ -251,15 +290,26 @@ night = []                 # 停用该动作的快捷键
 | `:+5 Enter` / `:-5 Enter` | 从当前页前进 / 后退 5 个物理页，超过边界时停在首页或末页 |
 | `:50% Enter` | 在页码对话框中跳到文档的 50%，也可点击底栏页码后输入 `50%` |
 | `F11` | 全屏 |
+| `F9` | 隐藏 / 恢复阅读控制栏 |
 | `Escape` | 关闭对话框或搜索，取消数字前缀 |
 
+顶部工具栏的 **Back to previous view / Forward to next view** 箭头可恢复跳转前后的页码、缩放、旋转、显示模式和页内滚动；没有可恢复位置时按钮禁用。搜索词和未保存的批注草稿会保留，关闭文档后清空历史。按钮支持 Tab 聚焦、Enter / Space 激活，窄窗口会自动滚动工具栏以显示当前焦点。
+
+点击顶部 **Hide controls** 或在阅读时按 `F9`，可隐藏顶部工具栏和底部常驻状态栏，给页面多留约 92px 高度；画布右上角的 **Show controls** 随时可用鼠标恢复。搜索、目录和批注侧栏保留，通知、撤销删除和操作状态按需显示，错误提示仍可访问。单页、连续和双页布局沿用当前页及可滚动方向的相对位置；页面已能完整显示时停在相应方向的起点。此开关仅对当前窗口生效；输入框中保留文本编辑按键，`reading_controls` 可重映射或停用快捷键。
+
 底部状态栏提供 **− / 缩放比例 / +**；点击 **View** 菜单可集中选择单页（Single page）、连续滚动（Continuous）、双页并排（Two pages side by side），以及适合整页、宽度、高度和实际大小。双页模式从第 1 页起按 1–2、3–4 配对，共用缩放比例；翻页切换整组，末尾落单页居中显示。显示模式会随文档、命名位置和历史记录保存与恢复。
+
+**View** 和搜索 **History** 菜单支持方向键、Tab / Shift+Tab 按条目顺序循环选择，Enter 或空格确认，Escape 仅关闭当前菜单。键盘打开菜单时聚焦首项，窄窗口自动滚动以显示当前选项；调整窗口尺寸后保留焦点。打开菜单、方向选择与确认同批到达时，会先建立菜单焦点，再按顺序处理后续输入；批注状态与操作菜单沿用相同规则。菜单打开期间，阅读翻页键不会穿透到 PDF。View 的全部布局及缩放选项在 240 × 240 窗口中均可访问。
 
 在 **View** 菜单选择 **Continuous** 或按 `Shift+C` 开启连续滚动：页面按纵向排列，滚轮、触控板、拖动和 `j/k`、半屏 / 整屏滚动均可跨页，页码及侧栏随阅读位置更新。模式按文档保存，重新打开时恢复页码和滚动位置；旧阅读记录默认使用单页模式。连续模式仅渲染可见页面并预取相邻页，多个可见页共享 96 MiB 页面纹理缓存。搜索高亮、内部链接、缩放、旋转和单页文本选择同样可用；`f/F` 链接提示针对当前页，文本选择不跨页。`zt/zz/zb` 仍对齐当前页，`Ctrl+e/y` 在连续模式中也可跨页。
 
 鼠标滚轮或触控板滚动，拖动平移，按 `p` 恢复适合整页。高倍缩放时按屏幕像素密度渲染可见区域的高清图块，平移后自动更新。键盘缩放保持视口中心；`Alt`（macOS 上为 Option）+滚轮或触控板捏合缩放保持指针下的位置。`v` 进入文本选择模式，拖选会高亮选区，支持反向、跨行和旋转后的文字；文本顺序取决于 PDF 的文本层。支持 PDF 文件拖入、加密文档密码输入、文档目录跳转、搜索结果高亮、书签、最近文档和阅读位置恢复。命名位置显示在侧栏，可点击返回或删除。重启后恢复页码与页内滚动，窗口尺寸变化时按相对滚动位置恢复。侧栏目录支持逐章节折叠、全部展开/折叠和 Unicode 标题筛选；筛选会显示命中条目的祖先，清空后恢复原来的折叠状态。目录支持 GoTo 动作和命名目标；内部链接和目录会应用 `XYZ` 的页内位置与缩放，以及 `Fit`、`FitH`、`FitV` 和 `FitR` 目标视图，支持裁剪框、文档自带旋转、阅读旋转及同页重新定位；网页链接在系统浏览器中打开；右键点击网页链接可复制地址，菜单内按回车复制、`Escape` 关闭，选择文字时保留文本操作。
 
 目录筛选支持以空白分隔的多个关键词，顺序不限，所有关键词需出现在同一章节标题中；例如 `080 chapter` 可找到 `Chapter 080`。支持 Unicode 大小写折叠，如 `strasse` 匹配 `Straße`；保留匹配标题的祖先作为上下文，首次回车优先定位实际匹配标题，清空后恢复原来的折叠状态。
+
+阅读时，目录按章节起始页持续高亮当前章节，直到下一个章节开始；同页有多个目标时取目录中后出现的可跳转条目，不区分页内位置。条目被折叠或筛选隐藏时，高亮其最近的可见上级；翻页不会自动展开或滚动目录。点击目录标题旁的 **Here** 可清除章节筛选，只展开当前章节的必要上级，并显露、选中条目及聚焦筛选框；PDF 的页码、缩放和滚动位置保持不变，搜索词和批注草稿也会保留。随后按回车才跳到章节起点。窄侧栏以 **TOC** 显示目录标题，保留 Here 入口。
+
+阅读时按 `Alt+↓` 到下一个章节起始页，`Alt+↑` 到前一个起始页；从章节中间页向前时先返回本章起始页，再按一次才到上一章。按起始页排序，同页多个目标只计作一章，并使用目录中后出现条目的完整位置与缩放目标；折叠和筛选不影响跳转。可先输入数字，如 `3 Alt+↓`；大计数直接到最后一个可达章节，不循环。一次带计数的跳转只生成一次历史记录，`Alt+←` 可返回跳转前的完整阅读视图。`next_chapter` 和 `previous_chapter` 可重映射或停用，输入框中不会触发章节跳转。
 
 章节筛选框中的 `PageUp/PageDown` 按当前视口可容纳的完整行数移动选择，`Ctrl/Cmd+Home/End` 到首尾，只计入当前可见的章节和上下文标题。窗口大小与字体改变后使用新的行数；普通 `Home/End` 继续编辑文字。回车跟随目标；没有目标的标题可用回车展开或折叠。按 `Escape` 返回阅读。
 
@@ -301,11 +351,13 @@ night = []                 # 停用该动作的快捷键
 
 侧栏 `PAGES` 可切换 `List` 页码列表和 `Previews` 缩略图，也可按 `t` 切换并打开侧栏。两种模式都会跟随键盘跳页；手动滚动侧栏后再次按 `gg` / `G`，会重新显示目标页所在行。点击跳页时保留列表的滚动位置，便于连续点击相邻页。预览支持页面旋转和颜色反转，并记住所选模式。
 
+用 `Tab` 聚焦页码行或预览卡片后，`↑/↓` 浏览相邻页，`Home/End` 到首尾，`PageUp/PageDown` 按当前视口能容纳的完整行数移动，至少一页。焦点可跨越尚未绘制的页面，列表自动显露目标；浏览焦点保留当前阅读页、缩放和滚动，按 `Enter` 或空格才跳转。缩窗或放大字体后继续显露聚焦行，按 `Escape` 返回阅读区。修饰键与文字输入保留原有操作。
+
 切换页面列表或预览模式时，会显露当前页所在的页面区，长目录和书签不会遮住入口。缩略图会随侧栏宽度和窗口高度缩小，保留完整图像和页码，并按实际展示尺寸渲染。调整窗口大小时，正在查看的页面预览继续可见；手动滚到其他预览后，缩放窗口会保留附近的页面。
 
 页面列表与预览文字优先显示物理页码，再显示 PDF 页码标签；长标签在行内或卡片内单行省略，标签中的换行会显示为空格。悬停列表行或预览可查看物理页码和完整的已读取标签。
 
-书签列表同样优先显示物理页码，并提供完整标签的悬停提示。每行右侧的 `×` 可直接删除该书签，保留当前阅读位置、缩放和旋转；窄侧栏也会为删除按钮保留空间。通过侧栏、工具栏或 `b` 删除后，状态栏会显示 5 秒的 `Undo bookmark` 按钮，可恢复最近删除的书签而不跳转页面。删除命名位置时会显示 `Undo mark`，完整保留原先的页码、缩放、旋转、页面布局和滚动位置；恢复后可照常跳转到该位置。两种恢复共用最近一次操作；下一次书签或命名位置编辑、新提示、重新加载或切换文档会结束这次恢复机会。跳转目标已在列表视口内时保留相邻行的位置，越界时只滚动必要距离；手动滚动后，普通重绘保留所选位置，再次执行页码跳转可重新显露当前书签。
+书签列表同样优先显示物理页码，并提供完整标签的悬停提示。每行右侧的 `×` 可直接删除该书签，保留当前阅读位置、缩放和旋转；窄侧栏也会为删除按钮保留空间。键盘激活书签或命名位置的删除按钮后，焦点移到下一项的跳转按钮；删除末项时移到前一项，列表清空时释放焦点。只有再次按 Enter/空格才跳转，连续按 Tab 则从新焦点继续浏览。通过侧栏、工具栏或 `b` 删除后，状态栏会显示 5 秒的 `Undo bookmark` 按钮，可恢复最近删除的书签而不跳转页面。删除命名位置时会显示 `Undo mark`，完整保留原先的页码、缩放、旋转、页面布局和滚动位置；恢复后可照常跳转到该位置。鼠标悬停或键盘聚焦撤销按钮时暂停倒计时，离开后重新保留 5 秒。两种恢复共用最近一次操作；下一次书签或命名位置编辑、新提示、重新加载或切换文档会结束这次恢复机会。跳转目标已在列表视口内时保留相邻行的位置，越界时只滚动必要距离；手动滚动后，普通重绘保留所选位置，再次执行页码跳转可重新显露当前书签。
 
 `v` 选择模式中双击按 Unicode 词边界选词，三击选中当前文本行；之后拖动会按相同单位扩展，单击恢复按字形选择。拖选时把指针停在阅读区域边缘会自动滚动，支持上下、左右与旋转页面；松开鼠标或到达页边后停止，不会自动翻页。双击选择时保留缩放；普通阅读模式下双击不改变缩放或阅读位置。组合重音和 emoji 不会在词选择中被拆开；中文按 Unicode 默认词边界处理，整行范围取决于 PDF 提取出的文本换行。
 
@@ -317,7 +369,9 @@ night = []                 # 停用该动作的快捷键
 
 误关文档后按 `Ctrl/Cmd+Shift+t` 可直接恢复，不必先筛选最近列表。保留关闭前的页码、缩放、旋转、滚动、书签和命名位置；重复关闭空白欢迎页不会丢失待恢复文档。此入口只保存本次会话中最近关闭的一份文档路径，恢复一次后清除；没有待恢复文档时显示提示，当前输入和阅读位置保持。若批注尚未保存或正在保存，恢复目标会保留，完成保存或丢弃草稿后可重试。加密文档重新要求密码，失败或尚未加载完成的文档也可关闭后重试。重启后仍可使用最近文档列表。
 
-`Ctrl/Cmd+p` 从最近 24 份文档中按文件名或完整路径筛选，支持 Unicode 大小写折叠与空格分隔的多个关键词。在筛选框中用方向键或 `Ctrl+j/k` 逐条选择，`PageUp/PageDown` 按当前视口的可见行数移动，`Ctrl/Cmd+Home/End` 到首尾；普通 `Home/End` 保留文字编辑功能。回车、双击或 Open 按钮打开并恢复该文档的阅读位置。调整窗口大小后，列表会重新显露选中项，保留筛选内容；平时可自由滚动列表。也可用 Tab 聚焦结果、Open 或 Cancel，按 Enter 激活当前控件。再次按快捷键、`Escape` 或 Cancel 关闭；筛选时输入不会触发页面导航。欢迎界面也提供入口。
+`Ctrl/Cmd+p` 从最近 24 份文档中按文件名或完整路径筛选，支持 Unicode 大小写折叠与空格分隔的多个关键词。在筛选框中用方向键或 `Ctrl+j/k` 逐条选择，`PageUp/PageDown` 按当前视口的可见行数移动，`Ctrl/Cmd+Home/End` 到首尾；普通 `Home/End` 保留文字编辑功能。回车、双击或 Open 按钮打开并恢复该文档的阅读位置。调整窗口大小后，列表会重新显露选中项，保留筛选内容；平时可自由滚动列表。也可用 Tab 聚焦结果、Open、Copy path 或 Cancel，按 Enter 激活当前控件。**Copy path**（紧凑窗口为 **Copy**）复制选中项的完整路径，保留最近列表、当前阅读位置和批注草稿；筛选框内的 `Ctrl/Cmd+c` 仍复制选中的筛选文字。没有结果或文件名无法准确表示为文字时，复制按钮禁用；非 UTF-8 路径仍可正常打开，不替换原始文件名字节。再次按快捷键、`Escape` 或 Cancel 关闭；筛选时输入不会触发页面导航。欢迎界面也提供入口。
+
+最近列表每行右侧的 **×** 可移除该文档的历史记录；Tab 聚焦文档行后也可按 `Delete`。PDF 文件会保留，该记录的阅读位置、书签和命名位置随记录移除；窗口内的 **Undo remove**（紧凑窗口为 **Undo**）可撤销最后一次移除，恢复完整状态和原排序，关闭窗口后不再保留撤销入口。筛选词会保留，移除后选中相邻结果。当前打开或正在加载的文档需先关闭才能移除；筛选框里的 `Delete` 继续编辑文字。
 
 欢迎页支持用 Tab / Shift+Tab 聚焦打开按钮、最近文档卡片和完整最近列表入口，按 Enter 或空格激活。焦点变化或调整窗口大小时会滚动显露当前控件，240×240 窗口也可操作；普通重绘会保留手动滚动的位置。
 
@@ -325,11 +379,11 @@ night = []                 # 停用该动作的快捷键
 
 ## 性能设计
 
-- PDF 加载、渲染、文本提取和搜索均放在后台线程，UI 通过事件唤醒。目录标题、文档信息和页码前缀按保留长度解码，避免为截掉的后缀创建临时字符串；UTF-16 直接读取字节，普通 ASCII 前缀直接复制，特殊 PDFDocEncoding 字节继续按编码表转换。
+- PDF 加载、渲染、文本提取和搜索均放在后台线程，UI 通过事件唤醒。目录的 Unicode 检索文字、树形索引和首批可见行也在后台准备，切换文档、关闭或退出可在准备期间取消，界面接收已就绪的目录。目录标题、文档信息和页码前缀按保留长度解码，避免为截掉的后缀创建临时字符串；UTF-16 直接读取字节，普通 ASCII 前缀直接复制，特殊 PDFDocEncoding 字节继续按编码表转换。
 - 切换或关闭文档会取消过期加载；普通文件每读取 1 MiB、解析前后及整理元数据之间检查请求。Unix 命名管道等待发送方连接或暂停写入时也能取消，无需补足数据或等到 EOF。其他正在执行的系统调用或 PDF 引擎调用需要返回后才能检查，过期的完成或错误结果不会占用后台消息队列。
 - 优先渲染当前页，再沿翻页方向优先预取相邻页；按各页尺寸、旋转和屏幕 DPI 计算分辨率，混合横竖版文档切页时可直接命中缓存。视图变化会替换尚未执行的渲染请求；已过期的在途结果会丢弃，仍需要的相同任务直接复用。
 - GPU 页面纹理使用 **96 MiB LRU 缓存**，最多保留 512 项，预取不会淘汰当前页；高倍缩放时跳过无法与当前页同时放入缓存的预取任务，纹理上传前再次检查容量。文本索引使用 32 MiB LRU 缓存，最多保留 512 页，容量不足时只逐出最近最少使用的页面；大页或索引增长需要大量回收时，统一整理候选顺序，减少反复扫描，索引刷新回收其他页时保护当前页。
-- 缩略图仅请求可见行，使用独立 **8 MiB LRU 缓存**，同样最多保留 512 项；滚动或关闭侧栏会取消过期任务，主页面渲染、文本操作和搜索优先执行。
+- 缩略图仅请求可见行，使用独立 **8 MiB LRU 缓存**，同样最多保留 512 项；滚动或关闭侧栏会取消过期任务，主页面渲染和文本操作优先执行。搜索每完成 8 个批次，会为一张等待中的缩略图让出后台执行机会，长文档扫描时也能逐步显示可见预览；没有待处理预览时搜索连续执行，搜索结束或停止后直接处理剩余预览。
 - 复用文档的解释器和字形缓存；缩放时可先复用同页已有纹理。后台直接把 PDF 渲染到纹理像素缓冲区；0° / 180° 的反色与旋转原地完成，省去整页复制及第二块像素缓冲区；90° / 270° 直接生成旋转后的纹理，大页面使用分块访问。命令行图像导出继续在 0° 和 180° 复用原字节缓冲区。
 - 搜索、整页复制与文本选择共享按需提取的文本缓存，选择模式通过共享引用接收当前页字形坐标，避免复制整页索引。
 - 密集文本的拖选定位使用后台按需构建的纵向空间索引，先缩小候选范围，再按纵向、横向距离选择字形，保留短行、重叠字形及距离并列时的原有规则；索引容量计入文本缓存。整页全选先直接高亮全部文字，实际开始点击或拖选时才准备交互索引。
@@ -342,14 +396,19 @@ night = []                 # 停用该动作的快捷键
 - 搜索数字前缀直接计算目标匹配，无需逐条跳转；若结果仍在扫描且目标尚未就绪，会等待足够结果再定位，扫描完成后才循环到另一端。
 - 搜索摘要直接截取匹配起点前 32、后 80 个 Unicode 字符，再统一替换换行，避免临时字符数组和多次字符串拼接。
 - 密集页面每批最多返回 256 条匹配，批次间优先处理新的页面渲染、文本操作和搜索请求；不再单独截断每页的第 1,000 条以后结果，统一受全局 10,000 条上限约束。
-- 搜索栏的 `Aa` 和 `Word` 可分别切换区分大小写、Unicode 整词匹配，两项可组合，设置在重启后保留。查询在后台首次扫描前仅预处理一次，页面渲染和文本操作优先执行；区分大小写直接搜索原文，整词边界按需建立为每字节一位的位图并计入文本缓存。首次使用默认忽略大小写的子串搜索。中文按 Unicode 词边界处理，不进行词典分词。
+- 没有新匹配的搜索批次只更新进度，首次立即通知，后续最多每 50ms 通知一次，避免空白页或稀疏查询挤满后台事件队列。新匹配、最终页数及结果上限仍立即返回；界面按收到的批次显示扫描进度，完成时返回准确页数。
+- 搜索栏的 `Aa` 和 `Word` 可分别切换区分大小写、Unicode 整词匹配，两项可组合，设置在重启后保留。查询在后台首次扫描前仅预处理一次，页面渲染和文本操作优先执行；区分大小写直接搜索原文，整词边界仅在页面出现候选文字时建立为每字节一位的位图并计入文本缓存，无候选的页面省去分词和位图分配。首次使用默认忽略大小写的子串搜索。中文按 Unicode 词边界处理，不进行词典分词。
 - 链接提示按字母前缀直接计算匹配索引范围，最多检查三个字符；只为匹配的提示生成标签。可见链接复用索引数组，重绘时不复制链接目标，悬停后才生成说明文字。
 - 链接元数据使用 **4 MiB、最多 64 页的 LRU 缓存**，计入向量和 URL 容量，容量满时逐页淘汰；过期页面结果不会挤掉当前页。超大当前页的链接临时保留在缓存之外，离开该页即释放。
 - 链接读取在首次解析内部跳转时才建立页面目标索引，随后在本次文档会话中复用；空页面和纯网页链接无需扫描所有页面来准备目标索引。
 - 命名目标表在首次解析名称或字符串目标时才读取；普通直接页码和页面引用不读取整张名称表，目录和页面链接分别复用各自已准备的表。
 - 渲染器移交像素缓冲区后，在后台转换为页面和缩略图所需的纹理像素；界面线程核对请求与缓存容量后上传。后台结果队列最多容纳 4 条消息，避免 UI 暂停时无限积累图像。
+- 批注覆盖层与链接共享可见区域组件；当前页视图未变时复用坐标和命中区域，缩放、旋转、裁切或批注快照变化时重建。连续/双页的其他页面复用一份临时缓冲，避免为每页保留一份几何缓存。
 - 批注列表只绘制可见卡片，按需缓存最近遇到的最多 128 组卡片文字；命中时复用摘要、作者、页码标签和状态行，重新加载批注时释放旧缓存。
 - 构建批注线程顺序时在多个根节点间复用遍历栈，跳过已访问节点；深层回复、孤立回复和循环关系仍按原有顺序显示。
+- 批注筛选复用当前快照的命中与父级上下文标记数组，每次只准备一次关键词搜索器。作者已满足全部关键词时跳过正文准备；大小写折叠对 ASCII 使用快速路径，Unicode 保留完整展开规则。作者与正文分别按实际容量计入 8 MiB 检索缓存，超出时复用临时缓冲并完整匹配；重载或切换批注快照时释放缓存与缓冲，清除旧命中。
+- 长批注文字筛选按约 4 毫秒的软预算在批注之间让出界面线程，跨帧复用关键词和缓存。只在完整扫描后发布命中、父级上下文和选择；单条字段折叠、查询准备及最终树遍历仍是完整操作，预算不保证最大帧耗时。
+- 快捷键分发使用独立的精简动作快照，保留按键、复制和鼠标历史操作的事件顺序；常见输入复用最多保留 256 条动作容量的缓冲，超大输入批次完整执行后释放临时容量。
 - 读取多行高亮等批注时逐个计算四边形边界，省去完整临时坐标数组和每个四边形的临时点数组；保留坐标读取上限、裁剪/旋转变换与矩形回退。
 - 自动保存的库快照共享不可变的最近文档记录，避免反复复制其他文档的书签与命名位置；当前文档仍独立编辑并发布新记录，后台快照不受后续操作影响。状态文件继续使用原有 JSON 格式。
 - 没有输入或后台结果时，界面不持续重绘。
@@ -377,14 +436,22 @@ cargo bench --locked --bench texture_pixels -- 9
 cargo bench --locked --bench link_hints -- 9
 # 链接屏幕区域，比较逐帧重算与复用，并覆盖持续移动的视图
 cargo bench --locked --bench link_visibility -- 9
+# 批注覆盖区域，比较固定视图、持续移动和每十帧变化一次的几何准备
+cargo bench --locked --bench link_visibility -- 21 comments
+# 邻页批注几何，比较固定双页和三页交替邻页时的缓冲复用
+cargo bench --locked --bench link_visibility -- 21 comment-neighbors
 # 密集页面拖选定位，分别记录查询、建索引耗时和索引容量
 cargo bench --locked --bench selection -- 9
 # 整词范围查询，比较重复分词与共享边界位图
 cargo bench --locked --bench word_selection -- 9
+# 词边界位图构建，比较通用 Unicode 分词与 ASCII 专用路径，含分配与容量校验
+cargo bench --locked --bench word_boundaries -- 17
 # 字形很少但文本层很长的页面，测量词/行查询与后台准备
 cargo bench --locked --bench sparse_selection -- 9
 # 搜索索引构建，比较原映射与 ASCII 直接偏移的耗时及容量
 cargo bench --locked --bench search_index -- 9
+# 混合文本索引：比较逐字符处理与长 ASCII 片段批量转换，含范围及分配校验
+cargo bench --locked --bench search_index_ascii -- 17
 # 书签编辑：比较每次重建有序索引与单点增删
 cargo bench --locked --bench bookmark_edits -- 9
 # 阅读进度保存：比较深复制与共享记录的快照构造，含完整保存准备及分配计数
@@ -397,34 +464,58 @@ cargo bench --locked --bench search_result_text -- 9
 cargo bench --locked --bench preview_caption -- 9
 # 页码文字：比较完整标签生成后截取与按可见前缀生成摘要
 cargo bench --locked --bench page_label_text -- 9
+# 对照标签跳转的 Unicode 前缀匹配、编号验证和临时分配
+cargo bench --locked --bench label_lookup -- 17
 # 单页与双页状态栏文字构造（含显示名和分配，不含界面与渲染）
 cargo bench --locked --bench status_text -- 21
 # 快捷键帮助筛选：比较每次格式化与复用目录检索文字，含分配计数
 cargo bench --locked --bench help_filter -- 21
 # 四条路径悬停提示：比较提前格式化与显示时格式化，含完整 egui 帧和分配计数
 cargo bench --locked --bench lazy_tooltips -- 21
+# 错误栏：完整 egui 帧对比消息复制与共用排版，含分配计数及文字/坐标校验
+cargo bench --locked --bench notice_panels -- 21
+# 阅读器输入快照：比较完整事件数组与精简动作缓冲，包含文字分类、混合事件和突发输入
+cargo bench --locked --bench input_actions -- 9
+# 完整搜索/批注剪贴板导出，对照旧实现的时间与分配（含 8 MiB 上限）
+cargo bench --locked --bench clipboard_exports -- 17
 # 完整分批文本搜索，包含匹配、高亮范围和摘要，复用已准备的文本与查询
 cargo bench --locked --bench search_matching -- 9
+# 首次整词搜索：无候选页与页尾命中，统计耗时、分配和边界索引增长；已准备大小写索引
+cargo bench --locked --bench search_word_misses -- 9
+# 真实后台扫描 4,000 页空白 PDF，四条消息队列按 16ms 帧间隔消费；不含加载或界面绘制
+cargo test --locked worker::search_updates::tests::measure_empty_search_with_frame_paced_consumer -- --ignored --nocapture --test-threads=1
 # 选区转换为单行搜索词，比较临时词数组与直接拼接
 cargo bench --locked --bench search_selection -- 9
+# 页内搜索高亮几何，比较逐帧变换与缓存复用，包含当前命中身份读取
+cargo bench --locked --bench search_highlights -- 21
 # PDF 标题解码，比较 UTF-16 直接解码和 ASCII 复制路径
 cargo bench --locked --bench pdf_strings -- 9
 # 有界标题和元数据前缀，比较完整解码后截断与按需解码
 cargo bench --locked --bench pdf_string_prefix -- 9
 # 文件读取，比较普通读取与带取消检查的分块读取
 cargo bench --locked --bench document_bytes -- 9
-# 完整目录筛选，包含匹配、祖先保留、选择和可见行更新
+# 完整目录筛选：同进程比较临时与复用筛选标记，含选择、可见行和分配计数
 cargo bench --locked --bench outline_filter -- 9
+# 目录准备：短标题与 2048 字符 Unicode 标题，量测从 UI 线程移走的完整索引工作
+cargo bench --locked --bench outline_filter -- 7 prepare
 # 首次链接读取，包含目标索引初始化和无链接、网页、内部跳转三种页面
 cargo bench --locked --bench link_reading -- 9
 # 批注线程排序、导航、页面索引及可见卡片文字，比较耗时并统计分配次数
 cargo bench --locked --bench comments -- 7
-# 仅比较线程排序的新旧实现，覆盖平铺、短链、宽树和循环
+# 仅比较线程排序的新旧实现，覆盖平铺、短链、深链、宽树、循环和缺失父批注，检查分配次数
 cargo bench --locked --bench comments -- 9 threads
+# 条件变化时的完整批注筛选，覆盖文字、状态、勾选与当前页，统计预热后的耗时和分配
+cargo bench --locked --bench comments -- 11 filters
+# 冷筛选和已有一次完整查询后的筛选，覆盖长 ASCII/Unicode 正文及缓存放不下的快照
+cargo bench --locked --bench comments -- 5 cold-filters
+# 比较完整与分批筛选的总计算时间、最长调用及批次数，包含最终上下文和可见行整理
+cargo bench --locked --bench comments -- 5 slices
 # 批注四边形：包含 PDF 数字数组读取、几何变换、结果构造及分配计数
 cargo bench --locked --bench annotation_geometry -- 9
 # 阅读视图渲染规划，比较重复计算、缓存命中与滚动失效，包含高分屏和紧张预算
 cargo bench --locked --bench render_plan -- 9
+# 连续布局在视口调整时复用几何，对照原实现并核对滚动边界
+cargo bench --locked --bench continuous_layout -- 17
 # 多页和分块的纹理保护准入，另测重复保护列表更新
 cargo bench --locked --bench texture_protection -- 7
 # 名称与页码标签树，覆盖共享无效/重复数组及跨节点扫描上限
@@ -434,53 +525,70 @@ cargo bench --locked --bench text_cache -- 9
 # 页面与预览纹理缓存，包含 egui 对象释放和可见纹理保护
 cargo bench --locked --bench texture_cache -- 9
 # Linux 原生窗口回归测试（需要 Xvfb、libXtst、GIO、desktop-file-utils 和 Python 3）
-# 显式指定虚拟桌面分辨率，确保窗口与测试坐标一致。
-xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/smoke-install-linux.py target/release/pagewing
-xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/smoke-desktop.py target/release/pagewing
-xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/smoke-cli.py target/release/pagewing
-xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/smoke-outline.py target/release/pagewing
-xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/smoke-outline-keyboard.py target/release/pagewing
-xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/smoke-long-title.py target/release/pagewing
-xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/smoke-bookmarks.py target/release/pagewing
-xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/smoke-marks.py target/release/pagewing
-xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/smoke-page-size.py target/release/pagewing
-xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/smoke-tiles.py target/release/pagewing
-xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/smoke-continuous.py target/release/pagewing
-xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/smoke-fit-height.py target/release/pagewing
-xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/smoke-zoom.py target/release/pagewing
-xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/smoke-destinations.py target/release/pagewing
-xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/smoke-thumbnails.py target/release/pagewing
-xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/smoke-preview-layout.py target/release/pagewing
-xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/smoke-link-hints.py target/release/pagewing
-xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/smoke-link-menu.py target/release/pagewing
-xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/smoke-link-copy.py target/release/pagewing
-xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/smoke-selection.py target/release/pagewing
-xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/smoke-selection-scroll.py target/release/pagewing
-xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/smoke-search-load.py target/release/pagewing
-xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/smoke-search-options.py target/release/pagewing
-xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/smoke-search-phrases.py target/release/pagewing
-xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/smoke-search-results.py target/release/pagewing
-xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/smoke-search-dense.py target/release/pagewing
-xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/smoke-persistence.py target/release/pagewing
-xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/smoke-paths.py target/release/pagewing
-xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/smoke-recent.py target/release/pagewing
-xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/smoke-welcome.py target/release/pagewing
-xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/smoke-close.py target/release/pagewing
-xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/smoke-load-cancel.py target/release/pagewing
-xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/smoke-properties.py target/release/pagewing
-xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/smoke-file-watch.py target/release/pagewing
-xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/smoke-help.py target/release/pagewing
-xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/smoke-comments.py target/release/pagewing
-xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/smoke-comment-navigation.py target/release/pagewing
-xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/smoke-input-burst.py target/release/pagewing
-xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/smoke-mouse-input.py target/release/pagewing
-xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/smoke-mouse-history.py target/release/pagewing
-xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/smoke-password.py target/release/pagewing
-xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/smoke-errors.py target/release/pagewing
-xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/smoke-vim-view.py target/release/pagewing
-xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/smoke-percentage.py target/release/pagewing
-xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/smoke-relative.py target/release/pagewing
+# 启动器原子分配独立的 1280×1024 显示，等待就绪，支持客户端断开后重连，并在结束或取消时清理。
+python3 scripts/test-with-xvfb.py
+python3 scripts/with-xvfb.py python3 scripts/test-desktop.py
+python3 scripts/with-xvfb.py python3 scripts/smoke-install-linux.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-desktop.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-cli.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-outline.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-outline-keyboard.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-outline-current.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-long-title.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-bookmarks.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-marks.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-removal-focus.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-page-size.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-tiles.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-continuous.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-fit-height.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-zoom.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-dialog-focus.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-destinations.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-thumbnails.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-preview-layout.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-link-hints.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-link-menu.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-link-copy.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-selection.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-selection-scroll.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-search-load.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-search-options.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-search-history.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-view-menu.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-search-phrases.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-search-results.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-search-stop.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-search-dense.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-persistence.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-paths.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-recent.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-recent-remove.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-welcome.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-close.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-load-cancel.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-properties.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-file-watch.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-help.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-comments.py target/release/pagewing
+# 顶部和底部控件焦点在宽/窄布局与动态状态间保留，激活按钮不同时滚动页面
+python3 scripts/with-xvfb.py python3 scripts/smoke-toolbar-focus.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-reading-controls.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-toolbar-history.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-comment-navigation.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-comment-filter-load.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-comment-menus.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-input-burst.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-mouse-input.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-mouse-history.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-password.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-errors.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-vim-view.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-percentage.py target/release/pagewing
+python3 scripts/with-xvfb.py python3 scripts/smoke-relative.py target/release/pagewing
 ```
+
+原生脚本共用 `scripts/smoke-desktop.py`。区域定位应在 `with keyboard.frame(bounds)` 中读取同一帧，再通过 `wait_for` 等待实际控件、焦点或保存状态。`keyboard.resize` 只确认 X11 尺寸；控件可见的阅读窗口使用 `resize_reader` 等待底部状态标签重绘，再检查所需内容。验证手动滚动等状态持续不变时，使用 `assert_stays` 在观察区间反复检查；键盘事件节奏、拖动和明确的时间行为仍可保留延时。
 
 `--render` 的页码从 1 开始，宽度单位是像素；`--benchmark` 会渲染全部页面，输出平均数、中位数和 P95。示例 PDF 由 `python3 scripts/make-sample.py` 确定性生成，也是回归测试夹具。GitHub Actions 在 Linux 和 macOS 上执行格式检查、Clippy、测试、release 构建及命令行渲染；Linux 还执行真实桌面键盘回归测试。测量环境与结果见 [性能记录](docs/performance.md)。
 

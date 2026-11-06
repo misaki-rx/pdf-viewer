@@ -1,4 +1,5 @@
 use super::{Pagewing, appearance, reveal_offset};
+use crate::app::list_focus::ListFocus;
 use eframe::egui::{self, Color32, RichText, Vec2};
 
 #[derive(Clone, Copy)]
@@ -15,6 +16,7 @@ impl Pagewing {
         viewport: Vec2,
         chapter_focus: bool,
     ) {
+        let focus_requested = self.result_focus_pending(ui.ctx());
         if self.hits.is_empty() {
             return;
         }
@@ -31,19 +33,26 @@ impl Pagewing {
         // scroll area: wheel scrolling must not change the list's height.
         let height = (viewport.y - heading.rect.height() - 3.0 * ui.spacing().item_spacing.y)
             .clamp(row_height, 280.0);
+        let row_target = self.list_keyboard.target(
+            ui.ctx(),
+            crate::app::list_keyboard::Scope::Results(self.id, self.revision),
+            self.hits.len(),
+            crate::list_navigation::page_rows(height, row_height, ui.spacing().item_spacing.y),
+        );
         let viewport_id = ui.make_persistent_id("result-viewport");
         let previous = ui
             .ctx()
             .data(|data| data.get_temp::<ResultViewport>(viewport_id));
-        let resized = previous.is_some_and(|previous| {
-            previous.selected_visible
-                && (previous.size != viewport || previous.row_height != row_height)
-        });
+        let viewport_changed = previous
+            .is_some_and(|previous| previous.size != viewport || previous.row_height != row_height);
+        let resized =
+            viewport_changed && previous.is_some_and(|previous| previous.selected_visible);
         let mut reveal = if ui.is_sizing_pass() {
             self.reveal_hit
         } else {
             self.reveal_hit.take()
         };
+        reveal = row_target.or(reveal);
         if reveal.is_none() && resized && !chapter_focus {
             reveal = self.hit_index.filter(|&index| {
                 self.hits
@@ -75,6 +84,18 @@ impl Pagewing {
             results = results.vertical_scroll_offset(offset);
         }
         let mut selected = None;
+        let mut copied = false;
+        let focus_target = row_target.or_else(|| {
+            focus_requested.then(|| self.hit_index.unwrap_or(0).min(self.hits.len() - 1))
+        });
+        let mut focus = ListFocus::new(ui, "search-results", row_height, height);
+        // An explicit motion wins over resize preservation of its old source.
+        // Otherwise the target may only exist in show_rows' clipped overscan.
+        let results = if row_target.is_some() {
+            results
+        } else {
+            focus.scroll(ui, results)
+        };
         let output = results.show_rows(ui, row_height, self.hits.len(), |ui, range| {
             for index in range {
                 let hit = &self.hits[index];
@@ -88,22 +109,56 @@ impl Pagewing {
                         highlight,
                     )
                 });
-                if ui
+                let response = ui
                     .add_sized(
                         Vec2::new(ui.available_width(), row_height),
                         egui::Button::selectable(self.hit_index == Some(index), label).truncate(),
                     )
-                    .on_hover_text(&hit.snippet)
-                    .clicked()
+                    .on_hover_ui(|ui| {
+                        ui.set_max_width(ui.spacing().tooltip_width);
+                        ui.label(&hit.snippet);
+                        ui.weak("When focused: ↑/↓ · PageUp/PageDown · Home/End to browse");
+                        ui.weak("Right-click to copy this snippet");
+                        ui.weak("When focused: Ctrl/Cmd+C to copy · Shift+F10 for menu");
+                    });
+                if focus_target == Some(index)
+                    && !ui.is_sizing_pass()
+                    && !ui.ctx().will_discard()
+                    && response.enabled()
                 {
+                    response.request_focus();
+                    self.result_focus_origin = None;
+                    self.list_keyboard.clear();
+                }
+                self.list_keyboard.register(
+                    &response,
+                    crate::app::list_keyboard::Scope::Results(self.id, self.revision),
+                    index,
+                );
+                if response.secondary_clicked() {
+                    self.nav.clear_prefix();
+                    self.hints.cancel();
+                    self.mark_action = None;
+                }
+                copied |= crate::app::copy_menu::show(
+                    &response,
+                    // A replacement query must not inherit this row's open menu.
+                    response.id.with(("snippet", self.revision)),
+                    "Copy snippet",
+                    &hit.snippet,
+                    crate::app::copy_menu::Target::Control,
+                );
+                focus.observe(&response, index);
+                if response.clicked() {
                     selected = Some(index);
                 }
             }
         });
         let bottom = ui.min_rect().bottom();
-        if reveal.is_some() {
+        if reveal.is_some() || (viewport_changed && focus.has_focus()) {
             // This UI belongs to the outer sidebar scroll area. Reveal the
-            // heading and the allocated list together after positioning its row.
+            // heading and list after positioning a selected or focused row,
+            // including the source of an open copy menu.
             ui.scroll_to_rect(
                 egui::Rect::from_min_max(
                     heading.rect.min,
@@ -135,6 +190,10 @@ impl Pagewing {
         if let Some(index) = selected {
             self.select_hit(index);
         }
+        if copied {
+            self.notify("Copied search snippet");
+        }
+        focus.finish(ui);
     }
 }
 
@@ -179,21 +238,21 @@ mod tests {
         size: Vec2,
         events: Vec<egui::Event>,
     ) -> egui::FullOutput {
-        context.run(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
-                time: Some(context.input(|input| input.time) + 0.25),
-                events,
-                ..Default::default()
-            },
-            |context| {
-                app.keys(context);
-                app.toolbar(context);
-                app.status(context);
-                app.sidebar(context);
-                egui::CentralPanel::default().show(context, |_| {});
-            },
-        )
+        let mut input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+            time: Some(context.input(|input| input.time) + 0.25),
+            events,
+            ..Default::default()
+        };
+        app.prepare_native_input(context, &mut input);
+        context.run(input, |context| {
+            app.keys(context);
+            app.toolbar(context);
+            app.search_bar(context);
+            app.status(context);
+            app.sidebar(context);
+            egui::CentralPanel::default().show(context, |_| {});
+        })
     }
 
     fn settle(app: &mut Pagewing, context: &egui::Context, size: Vec2) -> egui::FullOutput {
@@ -259,6 +318,172 @@ mod tests {
             ],
         );
         settle(app, context, size)
+    }
+
+    fn pointer_click(
+        app: &mut Pagewing,
+        context: &egui::Context,
+        size: Vec2,
+        position: egui::Pos2,
+        button: egui::PointerButton,
+    ) -> egui::FullOutput {
+        // Move before pressing: combining a large pointer delta and a held
+        // primary button in one frame starts ScrollArea's drag-to-scroll.
+        frame(
+            app,
+            context,
+            size,
+            vec![egui::Event::PointerMoved(position)],
+        );
+        let mut output = egui::FullOutput::default();
+        for pressed in [true, false] {
+            output = frame(
+                app,
+                context,
+                size,
+                vec![egui::Event::PointerButton {
+                    pos: position,
+                    button,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+        }
+        output
+    }
+
+    fn key(key: egui::Key) -> Vec<egui::Event> {
+        [true, false]
+            .map(|pressed| egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            })
+            .into()
+    }
+
+    fn menu_action(output: &egui::FullOutput) -> Option<egui::Rect> {
+        output.shapes.iter().find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.text() == "Copy snippet" => {
+                let rect = egui::Rect::from_min_size(text.pos, text.galley.size());
+                shape.clip_rect.contains_rect(rect).then_some(rect)
+            }
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn replacing_search_results_closes_the_old_snippet_menu() {
+        let (_directory, context, mut app) = long_sidebar();
+        let size = Vec2::new(860.0, 540.0);
+        app.select_hit(79);
+        app.search_button(SearchButton::Results);
+        let output = settle(&mut app, &context, size);
+        pointer_click(
+            &mut app,
+            &context,
+            size,
+            visible_result(&output, 78).unwrap().center(),
+            egui::PointerButton::Secondary,
+        );
+        assert!(egui::Popup::is_any_open(&context));
+        let mut hits = std::mem::take(&mut app.hits);
+        app.query = "replacement".into();
+        app.restart_search();
+        for hit in &mut hits {
+            hit.snippet = "replacement text".into();
+            hit.snippet_match = 0..11;
+        }
+        app.hits = hits;
+        let output = settle(&mut app, &context, size);
+        assert!(menu_action(&output).is_none());
+        assert!(!egui::Popup::is_any_open(&context));
+        assert_eq!(app.nav.page, 79);
+        assert_eq!(app.hit_index, None);
+    }
+
+    #[test]
+    fn snippet_menu_copies_unicode_without_selecting_or_navigating_and_survives_resize() {
+        let (_directory, context, mut app) = long_sidebar();
+        let size = Vec2::new(860.0, 540.0);
+        let snippet = "Straße 中文 😀 Needle 078";
+        app.hits[78].snippet = snippet.into();
+        let start = snippet.find("Needle").unwrap();
+        app.hits[78].snippet_match = start..start + 6;
+        app.select_hit(79);
+        app.search_button(SearchButton::Results);
+        let output = settle(&mut app, &context, size);
+        let position = visible_result(&output, 78).unwrap().center();
+        app.pan = Vec2::new(37.0, 53.0);
+        pointer_click(
+            &mut app,
+            &context,
+            size,
+            position,
+            egui::PointerButton::Secondary,
+        );
+        assert!(egui::Popup::is_any_open(&context));
+        assert_eq!(app.hit_index, Some(79));
+        assert_eq!(app.nav.page, 79);
+        for resized in [Vec2::new(240.0, 240.0), size] {
+            let output = settle(&mut app, &context, resized);
+            let action = menu_action(&output).expect("copy action must remain fully visible");
+            assert!(egui::Rect::from_min_size(egui::Pos2::ZERO, resized).contains_rect(action));
+        }
+        let output = frame(&mut app, &context, size, key(egui::Key::Enter));
+        assert!(output.platform_output.commands.iter().any(|command| {
+            matches!(command, egui::OutputCommand::CopyText(text) if text == snippet)
+        }));
+        assert!(!egui::Popup::is_any_open(&context));
+        assert_eq!(app.hit_index, Some(79));
+        assert_eq!(app.nav.page, 79);
+        assert_eq!(app.pan, Vec2::new(37.0, 53.0));
+
+        let output = settle(&mut app, &context, size);
+        pointer_click(
+            &mut app,
+            &context,
+            size,
+            visible_result(&output, 78).unwrap().center(),
+            egui::PointerButton::Secondary,
+        );
+        settle(&mut app, &context, size);
+        let output = frame(&mut app, &context, size, key(egui::Key::Escape));
+        assert!(!egui::Popup::is_any_open(&context));
+        assert!(
+            !output
+                .platform_output
+                .commands
+                .iter()
+                .any(|command| matches!(command, egui::OutputCommand::CopyText(_)))
+        );
+        assert_eq!(app.hit_index, Some(79));
+        assert_eq!(app.nav.page, 79);
+        assert_eq!(app.pan, Vec2::new(37.0, 53.0));
+
+        let output = settle(&mut app, &context, size);
+        pointer_click(
+            &mut app,
+            &context,
+            size,
+            visible_result(&output, 78).unwrap().center(),
+            egui::PointerButton::Secondary,
+        );
+        let output = settle(&mut app, &context, size);
+        let output = pointer_click(
+            &mut app,
+            &context,
+            size,
+            menu_action(&output).unwrap().center(),
+            egui::PointerButton::Primary,
+        );
+        assert!(output.platform_output.commands.iter().any(|command| {
+            matches!(command, egui::OutputCommand::CopyText(text) if text == snippet)
+        }));
+        assert_eq!(app.nav.page, 79);
+        assert_eq!(app.hit_index, Some(79));
     }
 
     #[test]
@@ -370,6 +595,50 @@ mod tests {
     }
 
     #[test]
+    fn left_click_follows_without_copying_or_moving_visible_rows() {
+        let (_directory, context, mut app) = long_sidebar();
+        let size = Vec2::new(860.0, 540.0);
+        app.select_hit(40);
+        app.search_button(SearchButton::Results);
+        let output = settle(&mut app, &context, size);
+        let heading = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == "SEARCH RESULTS" => Some(text.pos),
+                _ => None,
+            })
+            .unwrap();
+        let output = wheel(
+            &mut app,
+            &context,
+            size,
+            heading + egui::vec2(5.0, 5.0),
+            -90.0,
+        );
+        let before = visible_result(&output, 39).expect("neighboring result remains visible");
+        let position = before.center();
+        let output = pointer_click(
+            &mut app,
+            &context,
+            size,
+            position,
+            egui::PointerButton::Primary,
+        );
+        assert!(
+            !output
+                .platform_output
+                .commands
+                .iter()
+                .any(|command| matches!(command, egui::OutputCommand::CopyText(_)))
+        );
+        let output = settle(&mut app, &context, size);
+        assert_eq!(app.nav.page, 39);
+        assert_eq!(app.hit_index, Some(39));
+        assert_eq!(visible_result(&output, 39), Some(before));
+    }
+
+    #[test]
     fn outer_manual_scroll_survives_resize_and_results_restores_the_section() {
         let (_directory, context, mut app) = long_sidebar();
         let size = Vec2::new(860.0, 540.0);
@@ -398,5 +667,447 @@ mod tests {
         app.search_button(SearchButton::Results);
         let output = settle(&mut app, &context, size);
         assert!(selected_result(&context, &output, 79).is_some());
+    }
+
+    fn focus_results_button(app: &mut Pagewing, context: &egui::Context, size: Vec2) -> egui::Id {
+        app.search_open = true;
+        app.query = "Needle".into();
+        settle(app, context, size);
+        let id = app.input_buttons.search_results.unwrap();
+        context.memory_mut(|memory| memory.request_focus(id));
+        settle(app, context, size);
+        id
+    }
+
+    fn assert_focused_result(context: &egui::Context, output: &egui::FullOutput, index: usize) {
+        let id = context.memory(|memory| memory.focused()).unwrap();
+        let _focus = crate::app::shortcuts::preserve_pointer_focus(context);
+        let response = context.read_response(id).unwrap();
+        let text = visible_result(output, index).unwrap();
+        assert!(
+            response.rect.contains_rect(text),
+            "focused {id:?} {:?}, text {text:?}",
+            response.rect
+        );
+        assert!(response.has_focus());
+    }
+
+    fn copied(output: &egui::FullOutput) -> Vec<&str> {
+        output
+            .platform_output
+            .commands
+            .iter()
+            .filter_map(|command| match command {
+                egui::OutputCommand::CopyText(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn focused_list_keyboard_reveals_offscreen_rows_without_changing_the_reading_view() {
+        let (_directory, context, mut app) = long_sidebar();
+        let size = Vec2::new(860.0, 540.0);
+        app.select_hit(79);
+        app.nav.page = 40;
+        app.pan = Vec2::new(37.0, 53.0);
+        focus_results_button(&mut app, &context, size);
+        frame(&mut app, &context, size, key(egui::Key::Enter));
+        settle(&mut app, &context, size);
+        for (motion, expected) in [
+            (egui::Key::Home, 0),
+            (egui::Key::ArrowUp, 0),
+            (egui::Key::ArrowDown, 1),
+            (egui::Key::End, 79),
+            (egui::Key::ArrowDown, 79),
+        ] {
+            frame(&mut app, &context, size, key(motion));
+            let output = settle(&mut app, &context, size);
+            assert_eq!(
+                app.nav.page, 40,
+                "{motion:?} must belong to the result list"
+            );
+            assert_eq!(app.hit_index, Some(79));
+            assert_eq!(app.pan, Vec2::new(37.0, 53.0));
+            assert_focused_result(&context, &output, expected);
+        }
+        let mut events = vec![egui::Event::Copy];
+        events.extend(key(egui::Key::Home));
+        events.push(egui::Event::Copy);
+        let output = frame(&mut app, &context, size, events);
+        let mut copies: Vec<_> = copied(&output).into_iter().map(str::to_owned).collect();
+        for _ in 0..6 {
+            let output = frame(&mut app, &context, size, Vec::new());
+            copies.extend(copied(&output).into_iter().map(str::to_owned));
+        }
+        assert_eq!(copies, ["Needle 079", "Needle 000"]);
+        assert_eq!(app.nav.page, 40);
+        let mut events = key(egui::Key::Home);
+        events.extend(key(egui::Key::ArrowDown));
+        events.push(egui::Event::Copy);
+        events.extend(key(egui::Key::Enter));
+        let mut copies = Vec::new();
+        let output = frame(&mut app, &context, size, events);
+        copies.extend(copied(&output).into_iter().map(str::to_owned));
+        for _ in 0..6 {
+            let output = frame(&mut app, &context, size, Vec::new());
+            copies.extend(copied(&output).into_iter().map(str::to_owned));
+        }
+        assert_eq!(copies, ["Needle 001"]);
+        assert_eq!(app.hit_index, Some(1));
+        assert_eq!(app.nav.page, 1);
+    }
+
+    #[test]
+    fn result_page_navigation_uses_the_new_viewport_and_font_with_the_search_bar_closed() {
+        let mut steps = Vec::new();
+        for (height, font_size) in [(540.0, 14.0), (240.0, 14.0), (540.0, 28.0)] {
+            let (_directory, context, mut app) = long_sidebar();
+            let large = Vec2::new(860.0, 540.0);
+            app.select_hit(40);
+            app.nav.page = 17;
+            focus_results_button(&mut app, &context, large);
+            frame(&mut app, &context, large, key(egui::Key::Enter));
+            settle(&mut app, &context, large);
+            // Apply resize/font/bar changes with the key, before a new list
+            // viewport has been saved. Paging must use the layout being drawn.
+            app.search_open = false;
+            context.style_mut(|style| {
+                style.text_styles.insert(
+                    egui::TextStyle::Button,
+                    egui::FontId::proportional(font_size),
+                );
+            });
+            let size = Vec2::new(860.0, height);
+            frame(&mut app, &context, size, key(egui::Key::PageDown));
+            let output = settle(&mut app, &context, size);
+            let id = context.memory(|memory| memory.focused()).unwrap();
+            let response = context.read_response(id).unwrap();
+            let target = (41..80)
+                .find(|&index| {
+                    visible_result(&output, index)
+                        .is_some_and(|text| response.rect.contains_rect(text))
+                })
+                .unwrap_or_else(|| panic!(
+                    "PageDown must reveal a later result: height={height}, font={font_size}, reader={}, focus={:?}",
+                    app.nav.page, response.rect
+                ));
+            steps.push(target - 40);
+            frame(&mut app, &context, size, key(egui::Key::PageUp));
+            let output = settle(&mut app, &context, size);
+            assert_focused_result(&context, &output, 40);
+            assert_eq!(app.nav.page, 17);
+            assert_eq!(app.hit_index, Some(40));
+            let resized = Vec2::new(860.0, if height < 300.0 { 540.0 } else { 240.0 });
+            frame(&mut app, &context, resized, key(egui::Key::Home));
+            let output = settle(&mut app, &context, resized);
+            assert_focused_result(&context, &output, 0);
+            assert_eq!(app.nav.page, 17);
+        }
+        assert!(steps[0] > steps[1], "shorter viewport: {steps:?}");
+        assert!(steps[0] > steps[2], "larger font: {steps:?}");
+    }
+
+    #[test]
+    fn list_keyboard_does_not_take_keys_from_a_popup_or_a_replacement_query() {
+        let (_directory, context, mut app) = long_sidebar();
+        let size = Vec2::new(860.0, 540.0);
+        app.select_hit(40);
+        app.nav.page = 17;
+        focus_results_button(&mut app, &context, size);
+        frame(&mut app, &context, size, key(egui::Key::Enter));
+        settle(&mut app, &context, size);
+        let source = context.memory(|memory| memory.focused()).unwrap();
+        frame(
+            &mut app,
+            &context,
+            size,
+            vec![egui::Event::Key {
+                key: egui::Key::F10,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::SHIFT,
+            }],
+        );
+        frame(&mut app, &context, size, key(egui::Key::Home));
+        let output = frame(&mut app, &context, size, key(egui::Key::Enter));
+        assert_eq!(copied(&output), ["Needle 040"]);
+        assert_eq!(app.nav.page, 17);
+        assert_eq!(app.hit_index, Some(40));
+
+        // Moving focus to the query abandons a motion awaiting layout.
+        assert!(app.list_keyboard_key(&context, egui::Key::End, egui::Modifiers::NONE));
+        context.memory_mut(|memory| memory.request_focus(egui::Id::new("pagewing-search-input")));
+        settle(&mut app, &context, size);
+        assert!(context.memory(|memory| memory.has_focus(egui::Id::new("pagewing-search-input"))));
+        assert_eq!(app.nav.page, 17);
+        context.memory_mut(|memory| memory.request_focus(source));
+        settle(&mut app, &context, size);
+        assert!(app.list_keyboard_key(&context, egui::Key::End, egui::Modifiers::NONE));
+        app.restart_search();
+        app.hits.push(crate::text::SearchHit {
+            page: 0,
+            rects: Vec::new(),
+            snippet: "replacement".into(),
+            snippet_match: 0..1,
+        });
+        assert!(!app.list_keyboard_key(&context, egui::Key::Home, egui::Modifiers::NONE));
+        context.memory_mut(|memory| memory.request_focus(egui::Id::new("pagewing-search-input")));
+        settle(&mut app, &context, size);
+        assert!(!context.memory(|memory| memory.has_focus(source)));
+        assert_eq!(app.nav.page, 17);
+        assert_eq!(app.hit_index, None);
+    }
+
+    #[test]
+    fn queued_result_motion_menu_and_activation_copy_the_new_focus() {
+        let (_directory, context, mut app) = long_sidebar();
+        let size = Vec2::new(860.0, 540.0);
+        app.select_hit(78);
+        app.nav.page = 17;
+        focus_results_button(&mut app, &context, size);
+        frame(&mut app, &context, size, key(egui::Key::Enter));
+        settle(&mut app, &context, size);
+        let mut events = key(egui::Key::End);
+        events.extend(key(egui::Key::ArrowUp));
+        events.push(egui::Event::Key {
+            key: egui::Key::F10,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::SHIFT,
+        });
+        events.extend(key(egui::Key::Enter));
+        let output = frame(&mut app, &context, size, events);
+        let mut copies: Vec<_> = copied(&output).into_iter().map(str::to_owned).collect();
+        for _ in 0..8 {
+            let output = frame(&mut app, &context, size, Vec::new());
+            copies.extend(copied(&output).into_iter().map(str::to_owned));
+        }
+        assert_eq!(copies, ["Needle 078"]);
+        assert_eq!(app.hit_index, Some(78));
+        assert_eq!(app.nav.page, 17);
+        assert!(!egui::Popup::is_any_open(&context));
+    }
+
+    #[test]
+    fn clipped_result_focus_still_owns_navigation_and_reveals_its_target() {
+        let (_directory, context, mut app) = long_sidebar();
+        let size = Vec2::new(860.0, 540.0);
+        app.select_hit(79);
+        app.nav.page = 40;
+        focus_results_button(&mut app, &context, size);
+        frame(&mut app, &context, size, key(egui::Key::Enter));
+        let output = settle(&mut app, &context, size);
+        let source = context.memory(|memory| memory.focused()).unwrap();
+        let heading = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == "SEARCH RESULTS" => Some(text.pos),
+                _ => None,
+            })
+            .unwrap();
+        let output = wheel(
+            &mut app,
+            &context,
+            size,
+            heading + egui::vec2(5.0, 5.0),
+            4000.0,
+        );
+        assert!(visible_result(&output, 79).is_none());
+        assert!(context.memory(|memory| memory.has_focus(source)));
+        let response = context.read_response(source).unwrap();
+        assert!(!response.interact_rect.is_positive());
+        frame(&mut app, &context, size, key(egui::Key::Home));
+        let output = settle(&mut app, &context, size);
+        assert_eq!(app.nav.page, 40);
+        assert_eq!(app.hit_index, Some(79));
+        assert_focused_result(&context, &output, 0);
+    }
+
+    #[test]
+    fn results_activation_focuses_the_selected_row_before_queued_copy_and_enter_follows_it() {
+        for activation in [egui::Key::Enter, egui::Key::Space] {
+            let (_directory, context, mut app) = long_sidebar();
+            let size = Vec2::new(860.0, 540.0);
+            app.select_hit(79);
+            app.nav.page = 40;
+            app.pan = Vec2::new(37.0, 53.0);
+            focus_results_button(&mut app, &context, size);
+            let mut events = key(activation);
+            events.push(egui::Event::Copy);
+            let output = frame(&mut app, &context, size, events);
+            assert!(copied(&output).is_empty());
+            let output = frame(&mut app, &context, size, Vec::new());
+            assert_eq!(copied(&output), ["Needle 079"]);
+            assert_eq!(app.hit_index, Some(79));
+            assert_eq!(app.nav.page, 40);
+            assert_eq!(app.pan, Vec2::new(37.0, 53.0));
+            frame(&mut app, &context, size, key(egui::Key::Enter));
+            assert_eq!(app.nav.page, 79);
+            let output = settle(&mut app, &context, size);
+            assert_focused_result(&context, &output, 79);
+
+            app.nav.page = 40;
+            focus_results_button(&mut app, &context, size);
+            let mut events = key(activation);
+            events.extend(key(egui::Key::Enter));
+            frame(&mut app, &context, size, events);
+            assert_eq!(app.nav.page, 40);
+            frame(&mut app, &context, size, Vec::new());
+            assert_eq!(app.nav.page, 79, "queued Enter belongs to the result row");
+        }
+    }
+
+    #[test]
+    fn results_can_focus_the_first_arriving_hit_without_selecting_or_navigating() {
+        let (_directory, context, mut app) = long_sidebar();
+        let size = Vec2::new(860.0, 540.0);
+        let hits = std::mem::take(&mut app.hits);
+        app.nav.page = 40;
+        let origin = focus_results_button(&mut app, &context, size);
+        frame(&mut app, &context, size, key(egui::Key::Enter));
+        assert_eq!(app.result_focus_origin, Some(origin));
+        assert!(context.memory(|memory| memory.has_focus(origin)));
+        app.hits = hits;
+        let output = settle(&mut app, &context, size);
+        assert_focused_result(&context, &output, 0);
+        let output = frame(&mut app, &context, size, vec![egui::Event::Copy]);
+        assert_eq!(copied(&output), ["Needle 000"]);
+        assert_eq!(app.hit_index, None);
+        assert_eq!(app.nav.page, 40);
+    }
+
+    #[test]
+    fn pending_result_focus_is_abandoned_when_the_user_moves_on_or_replaces_the_query() {
+        for replaced in [false, true] {
+            let (_directory, context, mut app) = long_sidebar();
+            let size = Vec2::new(860.0, 540.0);
+            let hits = std::mem::take(&mut app.hits);
+            app.nav.page = 40;
+            let origin = focus_results_button(&mut app, &context, size);
+            frame(&mut app, &context, size, key(egui::Key::Enter));
+            let expected = if replaced {
+                app.query = "replacement".into();
+                app.restart_search();
+                origin
+            } else {
+                let editor = egui::Id::new("pagewing-search-input");
+                context.memory_mut(|memory| memory.request_focus(editor));
+                editor
+            };
+            app.hits = hits;
+            settle(&mut app, &context, size);
+            assert_eq!(app.result_focus_origin, None);
+            assert!(context.memory(|memory| memory.has_focus(expected)));
+            assert_eq!(app.nav.page, 40);
+            assert_eq!(app.hit_index, None);
+        }
+    }
+
+    #[test]
+    fn returning_to_results_does_not_revive_an_abandoned_focus_request() {
+        let (_directory, context, mut app) = long_sidebar();
+        let size = Vec2::new(860.0, 540.0);
+        let hits = std::mem::take(&mut app.hits);
+        let origin = focus_results_button(&mut app, &context, size);
+        frame(&mut app, &context, size, key(egui::Key::Enter));
+        context.memory_mut(|memory| {
+            memory.request_focus(egui::Id::new("pagewing-search-input"));
+        });
+        settle(&mut app, &context, size);
+        assert_eq!(app.result_focus_origin, None);
+        context.memory_mut(|memory| memory.request_focus(origin));
+        settle(&mut app, &context, size);
+        app.hits = hits;
+        settle(&mut app, &context, size);
+        assert!(context.memory(|memory| memory.has_focus(origin)));
+        assert_eq!(app.hit_index, None);
+        assert_eq!(app.nav.page, 0);
+    }
+
+    #[test]
+    fn resizing_keeps_a_snippet_menu_owner_alive_while_reading_another_page() {
+        for keyboard in [true, false] {
+            let (_directory, context, mut app) = long_sidebar();
+            let size = Vec2::new(860.0, 540.0);
+            app.select_hit(79);
+            app.nav.page = 40;
+            focus_results_button(&mut app, &context, size);
+            frame(&mut app, &context, size, key(egui::Key::Enter));
+            let output = settle(&mut app, &context, size);
+            if keyboard {
+                for code in [egui::Key::Tab, egui::Key::F10] {
+                    let events = key(code)
+                        .into_iter()
+                        .map(|mut event| {
+                            if let egui::Event::Key { modifiers, .. } = &mut event {
+                                *modifiers = egui::Modifiers::SHIFT;
+                            }
+                            event
+                        })
+                        .collect();
+                    frame(&mut app, &context, size, events);
+                }
+            } else {
+                pointer_click(
+                    &mut app,
+                    &context,
+                    size,
+                    visible_result(&output, 78).unwrap().center(),
+                    egui::PointerButton::Secondary,
+                );
+            }
+            assert!(egui::Popup::is_any_open(&context));
+            for resized in [Vec2::new(240.0, 240.0), size] {
+                let output = settle(&mut app, &context, resized);
+                let action = menu_action(&output).expect("the virtual source must survive resize");
+                assert!(egui::Rect::from_min_size(egui::Pos2::ZERO, resized).contains_rect(action));
+                assert!(egui::Popup::is_any_open(&context));
+            }
+            let output = frame(&mut app, &context, size, key(egui::Key::Enter));
+            assert_eq!(copied(&output), ["Needle 078"]);
+            assert_eq!(app.nav.page, 40);
+            assert_eq!(app.hit_index, Some(79));
+        }
+    }
+
+    #[test]
+    fn clicking_results_transfers_focus_before_a_copy_from_the_same_native_batch() {
+        let (_directory, context, mut app) = long_sidebar();
+        let size = Vec2::new(860.0, 540.0);
+        app.select_hit(79);
+        app.nav.page = 40;
+        let origin = focus_results_button(&mut app, &context, size);
+        context.memory_mut(|memory| memory.request_focus(egui::Id::new("pagewing-search-input")));
+        settle(&mut app, &context, size);
+        let position = context.read_response(origin).unwrap().rect.center();
+        frame(
+            &mut app,
+            &context,
+            size,
+            vec![egui::Event::PointerMoved(position)],
+        );
+        for pressed in [true, false] {
+            let mut events = vec![egui::Event::PointerButton {
+                pos: position,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            }];
+            if !pressed {
+                events.push(egui::Event::Copy);
+            }
+            let output = frame(&mut app, &context, size, events);
+            assert!(copied(&output).is_empty());
+        }
+        let output = frame(&mut app, &context, size, Vec::new());
+        assert_eq!(copied(&output), ["Needle 079"]);
+        let output = settle(&mut app, &context, size);
+        assert_focused_result(&context, &output, 79);
+        assert_eq!(app.nav.page, 40);
+        assert_eq!(app.hit_index, Some(79));
     }
 }
