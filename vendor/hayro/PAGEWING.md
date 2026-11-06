@@ -3,9 +3,11 @@
 Source: crates.io `hayro` 0.8.0, https://github.com/LaurenzV/hayro.
 Upstream MIT and Apache-2.0 licenses are retained alongside the source.
 
-Pagewing vendors only this renderer crate because its renderer and outline cache
+Pagewing vendors this renderer crate because its renderer and outline cache
 are private and upstream `RenderSettings` has no glyph weight option.
-The interpreter, font parsing, and other dependencies remain registry packages.
+`hayro-syntax` and `hayro-interpret` are also vendored for bounded decoded-page
+streams; their respective `PAGEWING.md` files describe those separate patches.
+Font parsing and other dependencies remain registry packages.
 
 Local changes are confined to `src/lib.rs` and `src/glyph.rs`:
 

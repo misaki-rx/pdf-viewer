@@ -4,6 +4,11 @@ use hayro::{
 };
 use std::path::Path;
 
+#[cfg(test)]
+#[allow(unused_imports)] // Test imports are unused in harness-free document benches.
+#[path = "document/stream_cache_tests.rs"]
+mod stream_cache_tests;
+
 pub const MAX_PIXELS: f64 = 16_000_000.0;
 
 /// Keep password challenges separate from failures that another password cannot fix.

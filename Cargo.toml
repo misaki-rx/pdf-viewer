@@ -26,8 +26,10 @@ shlex = "2.0.1"
 libc = "0.2"
 
 [patch.crates-io]
-# Glyph-only display weight; see vendor/hayro/PAGEWING.md.
+# Renderer and bounded decoded-page streams; see vendor/*/PAGEWING.md.
 hayro = { path = "vendor/hayro" }
+hayro-syntax = { path = "vendor/hayro-syntax" }
+hayro-interpret = { path = "vendor/hayro-interpret" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.5"
@@ -102,6 +104,10 @@ harness = false
 
 [[bench]]
 name = "document_bytes"
+harness = false
+
+[[bench]]
+name = "page_stream_cache"
 harness = false
 
 [[bench]]
